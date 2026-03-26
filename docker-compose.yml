@@ -1,0 +1,66 @@
+services:
+  factory:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./experiments:/app/experiments
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # CLI runner (for one-off pipeline runs)
+  cli:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./experiments:/app/experiments
+      - ./data:/app/data
+      - ./logs:/app/logs
+    entrypoint: ["python", "-m", "src.main"]
+    profiles:
+      - cli
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # Optional: TimescaleDB for production data storage
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+      POSTGRES_DB: agent_factory
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    profiles:
+      - db
+    restart: unless-stopped
+
+  # Optional: Grafana for monitoring
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  pg_data:
+  grafana_data:

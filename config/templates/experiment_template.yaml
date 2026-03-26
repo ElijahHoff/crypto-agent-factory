@@ -1,0 +1,101 @@
+# ═══════════════════════════════════════════════════════════
+# EXPERIMENT REGISTRY TEMPLATE
+# Copy this file and fill in for each new experiment.
+# ═══════════════════════════════════════════════════════════
+
+experiment_id: "EXP-XXXX"
+strategy_name: ""
+researcher: ""
+date_started: "YYYY-MM-DD"
+date_completed: null
+status: "in_progress"  # in_progress | completed | abandoned
+
+# ─── Stage A: Hypothesis ───────────────────────────────────
+hypothesis:
+  name: ""
+  idea: ""
+  economic_logic: ""
+  strategy_type: ""  # momentum | mean_reversion | breakout | cross_sectional | market_neutral | funding_basis | sentiment | regime_adaptive | volatility_structure
+  timeframe: ""
+  universe: []
+  long_logic: ""
+  short_logic: ""
+  risk_factors: []
+  edge_death_conditions: []
+
+# ─── Stage B: Formalization ────────────────────────────────
+formalization:
+  entry_rules: []
+  exit_rules: []
+  position_sizing: ""
+  rebalance_logic: ""
+  parameters: {}
+  hyperparameters: {}
+  frozen_params: []
+  pseudocode: ""
+
+# ─── Stage C: Data Spec ───────────────────────────────────
+data_spec:
+  datasets: []
+  frequency: ""
+  period: ""
+  universe_selection: ""
+  preprocessing: []
+  quality_checks: []
+
+# ─── Stage D: Backtest Design ─────────────────────────────
+backtest_design:
+  train_pct: 0.50
+  validation_pct: 0.25
+  test_pct: 0.25
+  walk_forward_windows: 5
+  benchmarks: ["buy_and_hold_btc"]
+  commission_bps: 10
+  slippage_bps: 5
+  rejection_criteria:
+    min_sharpe: 0.8
+    max_drawdown_pct: 25
+    min_trades: 100
+    min_profit_factor: 1.2
+
+# ─── Stage E: Results ─────────────────────────────────────
+results:
+  in_sample:
+    cagr_pct: null
+    sharpe: null
+    sortino: null
+    calmar: null
+    max_drawdown_pct: null
+    hit_rate: null
+    profit_factor: null
+    total_trades: null
+    turnover: null
+  out_of_sample:
+    cagr_pct: null
+    sharpe: null
+    sortino: null
+    max_drawdown_pct: null
+    total_trades: null
+
+# ─── Stage F: Robustness ──────────────────────────────────
+robustness:
+  fee_2x_survived: null
+  slippage_3x_survived: null
+  delayed_entry_survived: null
+  subperiod_stability: null
+  top_trades_removal_survived: null
+  signal_degradation_survived: null
+  overall_score: null
+
+# ─── Stage G: Decision ────────────────────────────────────
+decision:
+  verdict: null  # reject | refine | advance
+  reasoning: ""
+  key_risks: []
+  improvements: []
+  edge_evidence: []
+
+# ─── Notes ────────────────────────────────────────────────
+notes: ""
+tags: []
+related_experiments: []

@@ -1,0 +1,83 @@
+# Funding Rate Mean Reversion Strategy
+# Strategy Class: Exploit extreme funding rates by fading the crowd.
+
+name: "funding_rate_mean_reversion"
+version: "0.1"
+type: "funding_basis"
+timeframe: "1h"
+
+universe:
+  method: "perp_markets_with_funding"
+  n_assets: 20
+  quote: "USDT"
+  min_open_interest_usd: 10_000_000
+  rebalance_frequency: "daily"
+
+hypothesis:
+  idea: "Extreme funding rates revert to mean, creating a carry + directional edge"
+  economic_logic: |
+    When funding is extremely positive, overleveraged longs pay shorts — this
+    creates a carry opportunity. Additionally, extreme funding often precedes
+    liquidation cascades that push price against the crowded side. By going
+    short when funding is extreme positive (and vice versa), we collect carry
+    and benefit from mean-reversion in positioning.
+  counterparty: "Overleveraged directional traders paying excessive funding"
+  edge_death_conditions:
+    - "Exchange changes funding mechanism"
+    - "Funding rates become capped or dampened"
+    - "Arbitrageurs fully compress basis"
+    - "Open interest / leverage regulation"
+
+entry_rules:
+  funding_zscore_threshold: 2.0
+  funding_lookback_hours: 168
+  direction: "contra_funding"  # Short when funding very positive
+  oi_confirmation: true  # Require high OI as confirmation
+  
+exit_rules:
+  funding_zscore_exit: 0.5  # Exit when funding normalizes
+  max_holding_hours: 72
+  stop_loss_pct: 5.0
+
+position_sizing:
+  method: "equal_risk"
+  max_position_pct: 5.0
+  target_gross_exposure_pct: 50.0
+
+risk_framework:
+  max_leverage: 2.0
+  max_drawdown_pct: 12.0
+  daily_loss_limit_pct: 2.0
+  max_concurrent_positions: 10
+  kill_switch:
+    - "exchange_funding_mechanism_change"
+    - "3_consecutive_losing_trades"
+
+parameters:
+  funding_zscore_threshold: 2.0
+  funding_lookback_hours: 168
+  exit_zscore: 0.5
+  max_holding_hours: 72
+
+hyperparameters:
+  funding_zscore_threshold:
+    range: [1.5, 3.0]
+    step: 0.25
+  funding_lookback_hours:
+    range: [72, 336]
+    step: 24
+
+frozen_params:
+  - max_leverage
+  - daily_loss_limit_pct
+
+backtest:
+  start_date: "2021-06-01"
+  end_date: "2024-12-31"
+  commission_bps: 8
+  slippage_bps: 5
+  funding_bps: 0  # Funding IS the signal, model explicitly
+  walk_forward_windows: 5
+  benchmarks:
+    - "buy_and_hold_btc"
+    - "short_only_high_funding"

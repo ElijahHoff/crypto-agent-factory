@@ -1,0 +1,94 @@
+# Volatility Breakout Strategy
+# Strategy Class: Enter on volatility expansion after compression periods.
+
+name: "volatility_breakout"
+version: "0.1"
+type: "breakout"
+timeframe: "1h"
+
+universe:
+  method: "top_by_volume"
+  n_assets: 15
+  quote: "USDT"
+  min_avg_daily_volume_usd: 50_000_000
+  rebalance_frequency: "weekly"
+
+hypothesis:
+  idea: "Volatility compression periods precede explosive moves; breakouts from tight ranges carry momentum"
+  economic_logic: |
+    Periods of low volatility represent equilibrium / indecision. When new information
+    arrives or a large participant acts, the compressed range breaks and price trends
+    as stops are triggered and momentum traders pile in. In crypto, this effect is
+    amplified by 24/7 markets, high leverage, and cascading liquidations. The edge
+    comes from identifying compression and positioning for the expansion, regardless
+    of direction.
+  counterparty: "Range-bound traders with stops just outside the range; late faders"
+  edge_death_conditions:
+    - "Volatility regime becomes permanently elevated (no compression phases)"
+    - "Market makers widen spreads during compression, killing entry"
+    - "Liquidation engines change behavior"
+
+entry_rules:
+  compression_detector: "bollinger_bandwidth"
+  compression_lookback: 48  # hours
+  compression_threshold_percentile: 10  # Bottom 10% of historical bandwidth
+  breakout_trigger: "close_outside_band"
+  volume_confirmation: true
+  min_volume_ratio: 1.5  # vs 20-bar avg
+  
+exit_rules:
+  trailing_stop_atr_mult: 2.0
+  time_stop_hours: 48
+  profit_target_atr_mult: 4.0
+
+position_sizing:
+  method: "atr_based"
+  risk_per_trade_pct: 1.0
+  atr_period: 24
+
+risk_framework:
+  max_leverage: 2.0
+  max_drawdown_pct: 15.0
+  daily_loss_limit_pct: 3.0
+  max_concurrent_positions: 5
+  cooldown_after_stop_hours: 4
+  drawdown_brakes:
+    - level_pct: 5
+      action: "reduce_size_50pct"
+    - level_pct: 10
+      action: "pause_new_entries"
+    - level_pct: 15
+      action: "close_all"
+
+parameters:
+  compression_lookback: 48
+  compression_percentile: 10
+  trailing_atr_mult: 2.0
+  profit_target_atr_mult: 4.0
+  time_stop_hours: 48
+  vol_min_ratio: 1.5
+
+hyperparameters:
+  compression_lookback:
+    range: [24, 96]
+    step: 12
+  trailing_atr_mult:
+    range: [1.5, 3.0]
+    step: 0.25
+
+frozen_params:
+  - max_leverage
+  - daily_loss_limit_pct
+  - risk_per_trade_pct
+
+backtest:
+  start_date: "2021-01-01"
+  end_date: "2024-12-31"
+  commission_bps: 10
+  slippage_bps: 8
+  funding_bps: 1
+  walk_forward_windows: 6
+  benchmarks:
+    - "buy_and_hold_btc"
+    - "buy_and_hold_eth"
+    - "random_entry_same_sizing"

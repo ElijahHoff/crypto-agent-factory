@@ -1,0 +1,91 @@
+# Cross-Sectional Momentum Strategy Configuration
+# Strategy Class: Rank assets by recent returns, go long top quintile, short bottom quintile.
+
+name: "cross_sectional_momentum"
+version: "0.1"
+type: "cross_sectional"
+timeframe: "4h"
+
+universe:
+  method: "top_by_volume"
+  n_assets: 30
+  quote: "USDT"
+  exclude:
+    - stablecoins
+    - wrapped_tokens
+  rebalance_frequency: "weekly"
+  min_listing_days: 90
+
+hypothesis:
+  idea: "Assets with strong recent returns continue to outperform in the short-term"
+  economic_logic: |
+    Herding behavior, delayed information diffusion across the crypto universe,
+    and momentum-chasing retail flow create persistence in cross-sectional returns.
+    The effect is amplified in crypto due to high retail participation and
+    information asymmetry across the long tail of altcoins.
+  counterparty: "Mean-reversion traders and late sellers in declining assets"
+  edge_death_conditions:
+    - "Market becomes fully efficient with instant information diffusion"
+    - "Cross-sectional dispersion collapses (all assets move together)"
+    - "Momentum crowding causes reversals"
+
+entry_rules:
+  lookback_period: 168  # hours (7 days)
+  long_threshold_quantile: 0.8  # Top 20%
+  short_threshold_quantile: 0.2  # Bottom 20%
+  min_return_spread: 0.02  # Min spread between long/short baskets
+  
+exit_rules:
+  rebalance_frequency: "24h"
+  stop_loss_per_position_pct: 10.0
+  max_holding_bars: 168  # 7 days
+
+position_sizing:
+  method: "inverse_volatility"
+  max_position_pct: 5.0
+  target_gross_exposure_pct: 100.0
+  target_net_exposure_pct: 0.0  # Market neutral
+
+risk_framework:
+  max_leverage: 2.0
+  max_drawdown_pct: 15.0
+  daily_loss_limit_pct: 3.0
+  max_concurrent_positions: 20
+  drawdown_brakes:
+    - level_pct: 5
+      action: "reduce_50pct"
+    - level_pct: 10
+      action: "reduce_75pct"  
+    - level_pct: 15
+      action: "stop"
+
+parameters:
+  lookback_hours: 168
+  rebalance_hours: 24
+  n_long: 6
+  n_short: 6
+  vol_lookback_hours: 336
+
+hyperparameters:
+  lookback_hours:
+    range: [48, 336]
+    step: 24
+  n_long:
+    range: [3, 10]
+    step: 1
+
+frozen_params:
+  - max_leverage
+  - drawdown_brakes
+  - daily_loss_limit_pct
+
+backtest:
+  start_date: "2021-01-01"
+  end_date: "2024-12-31"
+  commission_bps: 10
+  slippage_bps: 8
+  funding_bps: 1
+  walk_forward_windows: 6
+  benchmarks:
+    - "buy_and_hold_btc"
+    - "equal_weight_top30"

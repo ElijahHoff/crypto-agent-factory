@@ -1,0 +1,103 @@
+# ═══════════════════════════════════════════════════════════
+# DECISION MEMO — RISK COMMITTEE
+# Strategy review and go/no-go decision.
+# ═══════════════════════════════════════════════════════════
+
+memo_id: "DM-XXXX"
+date: "YYYY-MM-DD"
+experiment_id: "EXP-XXXX"
+strategy_name: ""
+reviewed_by:
+  - research_director
+  - risk_manager
+  - statistician
+  - auditor
+
+# ─── Executive Summary ─────────────────────────────────────
+summary: |
+  [1-2 paragraph overview of the strategy and findings]
+
+# ─── Key Metrics ───────────────────────────────────────────
+metrics:
+  in_sample_sharpe: null
+  oos_sharpe: null
+  sharpe_decay_ratio: null  # OOS / IS
+  max_drawdown_pct: null
+  total_trades: null
+  profit_factor: null
+  robustness_score: null  # 0-1
+
+# ─── Edge Assessment ──────────────────────────────────────
+edge_assessment:
+  economic_logic_validity: ""  # strong | moderate | weak
+  statistical_significance: ""  # significant | marginal | insufficient
+  counterparty_identified: true
+  survives_realistic_costs: true
+  survives_stress_tests: true
+  regime_independent: false
+  sample_sufficient: true
+
+# ─── Risk Assessment ──────────────────────────────────────
+risk_assessment:
+  overall_rating: ""  # low | medium | high | critical
+  max_expected_loss_monthly: null
+  tail_risk_concern: ""
+  concentration_risk: ""
+  liquidity_risk: ""
+  leverage_assessment: ""
+  correlation_with_existing: null
+
+# ─── Robustness Summary ──────────────────────────────────
+robustness:
+  tests_passed: 0
+  tests_total: 0
+  critical_failures: []
+  notable_weaknesses: []
+
+# ─── Auditor Findings ─────────────────────────────────────
+audit:
+  result: ""  # pass | conditional_pass | fail
+  critical_issues: []
+  concerns: []
+  things_done_well: []
+
+# ─── Decision ─────────────────────────────────────────────
+decision: ""  # REJECT | REFINE | ADVANCE
+
+rationale: |
+  [Detailed reasoning for the decision]
+
+conditions_for_advancement:
+  - ""
+
+required_modifications:
+  - ""
+
+# ─── If ADVANCE: Paper Trading Plan ──────────────────────
+paper_trading:
+  proposed_start: "YYYY-MM-DD"
+  duration_days: 30
+  capital_allocation_pct: null
+  monitoring_frequency: "daily"
+  graduation_criteria:
+    min_trades: 50
+    max_deviation_from_backtest_pct: 20
+    min_sharpe: 0.5
+  kill_conditions:
+    - "Max drawdown > 10%"
+    - "3 consecutive days of losses exceeding daily limit"
+
+# ─── Dissenting Opinions ─────────────────────────────────
+dissenting_opinions:
+  - agent: ""
+    opinion: ""
+
+# ─── Next Steps ───────────────────────────────────────────
+next_steps:
+  - ""
+
+# ─── Appendix ─────────────────────────────────────────────
+appendix:
+  equity_curve_path: ""
+  full_report_path: ""
+  related_experiments: []
