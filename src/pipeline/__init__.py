@@ -120,15 +120,39 @@ def backtest_design_node(state: GraphState) -> GraphState:
 
 
 def backtest_run_node(state: GraphState) -> GraphState:
-    """Stage E: Execute backtest (placeholder — actual execution is separate)."""
-    logger.info("═══ Stage E: Backtest Execution (blueprint) ═══")
-    # In a real system, this would invoke the actual backtesting engine.
-    # Here we generate the execution plan and expected output structure.
-    state["agent_outputs"]["backtest_result"] = {
-        "status": "blueprint_generated",
-        "note": "Actual backtest execution requires market data and compute engine.",
-        "expected_output_schema": "BacktestResult model from src.models",
-    }
+    """Stage E: Fetch real market data, generate signals, run backtest + robustness."""
+    logger.info("═══ Stage E: LIVE Backtest Execution ═══")
+
+    try:
+        from src.backtesting.live_runner import LiveBacktestRunner
+
+        runner = LiveBacktestRunner()
+        result = runner.run(agent_outputs=state["agent_outputs"])
+
+        if result.get("status") == "error":
+            logger.warning(f"Backtest error: {result.get('error')}")
+            state["agent_outputs"]["backtest_result"] = result
+            state["errors"].append(f"Backtest failed: {result.get('error')}")
+        else:
+            state["agent_outputs"]["backtest_result"] = result
+            is_data = result.get("in_sample", {})
+            logger.info(
+                f"✅ Backtest done: Sharpe={is_data.get('sharpe', 'N/A')}, "
+                f"Trades={is_data.get('total_trades', 0)}, "
+                f"MaxDD={is_data.get('max_drawdown_pct', 'N/A')}%"
+            )
+
+    except Exception as e:
+        logger.exception(f"Backtest execution failed: {e}")
+        state["agent_outputs"]["backtest_result"] = {
+            "status": "error",
+            "error": str(e),
+            "in_sample": None,
+            "out_of_sample": None,
+            "robustness": None,
+        }
+        state["errors"].append(str(e))
+
     state["current_stage"] = PipelineStage.ROBUSTNESS.value
     return state
 
