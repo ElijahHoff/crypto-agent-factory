@@ -29,6 +29,50 @@ class GraphState(TypedDict):
     should_stop: bool
 
 
+
+def _enrich_backtest_context(experiment: dict) -> str:
+    """Build enriched context string with charts, benchmarks, walk-forward for agents."""
+    parts = []
+    bt = experiment.get("backtest_result") or {}
+
+    # Chart analysis (text description of visual patterns)
+    chart_text = bt.get("chart_analysis", experiment.get("chart_analysis", ""))
+    if chart_text:
+        parts.append(chart_text)
+
+    # Benchmark comparison
+    benchmarks = bt.get("benchmarks", {})
+    if benchmarks:
+        parts.append("\n=== BENCHMARK COMPARISON ===")
+        for name, data in benchmarks.items():
+            if isinstance(data, dict):
+                parts.append(f"  {name}: return={data.get('total_return', 0):.2%}, "
+                           f"Sharpe={data.get('sharpe', 0):.3f}, "
+                           f"MaxDD={data.get('max_drawdown', 0):.2%}")
+
+    # Walk-forward
+    wf = bt.get("walk_forward", {})
+    if wf:
+        parts.append(f"\n=== WALK-FORWARD ({wf.get('n_periods', 0)} periods) ===")
+        parts.append(f"  Consistency: {wf.get('positive_periods', 0)}/{wf.get('n_periods', 0)} positive "
+                   f"({wf.get('consistency_ratio', 0):.0%})")
+        parts.append(f"  Avg Sharpe: {wf.get('avg_sharpe', 0):.3f} ± {wf.get('sharpe_std', 0):.3f}")
+        subperiods = wf.get("subperiods", [])
+        if subperiods:
+            sharpes = [f"{s.get('sharpe', 0):.2f}" for s in subperiods]
+            parts.append(f"  Per-period Sharpes: [{', '.join(sharpes)}]")
+
+    # Multi-asset
+    multi = bt.get("multi_asset", {})
+    if multi:
+        parts.append("\n=== MULTI-ASSET CROSS-VALIDATION ===")
+        for sym, data in multi.items():
+            parts.append(f"  {sym}: Sharpe={data.get('sharpe', 0):.3f}, "
+                       f"return={data.get('total_return', 0):.2%}")
+
+    return "\n".join(parts)
+
+
 def _to_state(d: GraphState) -> PipelineState:
     return PipelineState(
         experiment=ExperimentRecord(**d["experiment"]),
@@ -127,7 +171,7 @@ def backtest_run_node(state: GraphState) -> GraphState:
         from src.backtesting.live_runner import LiveBacktestRunner
 
         runner = LiveBacktestRunner()
-        result = runner.run(agent_outputs=state["agent_outputs"])
+        result = runner.run(state["agent_outputs"].get("quant_formalization", {}), state["agent_outputs"].get("backtest_design", {}), strategy_name=state["experiment"]["strategy_name"])
 
         if result.get("status") == "error":
             logger.warning(f"Backtest error: {result.get('error')}")
@@ -161,6 +205,17 @@ def risk_review_node(state: GraphState) -> GraphState:
     """Stage F (part 1): Risk assessment."""
     logger.info("═══ Stage F: Risk Review ═══")
     agent = get_agent("risk_manager")
+
+    # v0.4: Inject chart analysis, benchmarks, walk-forward into agent context
+
+    _extra_context = _enrich_backtest_context(state.get("experiment", {}))
+
+    if _extra_context:
+
+        if isinstance(experiment.get("backtest_result"), dict):
+
+            experiment["backtest_result"]["_enriched_analysis"] = _extra_context
+
     result = agent.run({
         "stage": "risk_review",
         "strategy": state["agent_outputs"].get("formalization", {}),
@@ -176,6 +231,17 @@ def validation_node(state: GraphState) -> GraphState:
     """Stage F (part 2): Statistical validation."""
     logger.info("═══ Stage F: Statistical Validation ═══")
     agent = get_agent("statistician")
+
+    # v0.4: Inject chart analysis, benchmarks, walk-forward into agent context
+
+    _extra_context = _enrich_backtest_context(state.get("experiment", {}))
+
+    if _extra_context:
+
+        if isinstance(experiment.get("backtest_result"), dict):
+
+            experiment["backtest_result"]["_enriched_analysis"] = _extra_context
+
     result = agent.run({
         "stage": "validation",
         "strategy": state["agent_outputs"].get("formalization", {}),
@@ -193,6 +259,17 @@ def audit_node(state: GraphState) -> GraphState:
     """Independent adversarial audit."""
     logger.info("═══ Audit / Critic Review ═══")
     agent = get_agent("auditor")
+
+    # v0.4: Inject chart analysis, benchmarks, walk-forward into agent context
+
+    _extra_context = _enrich_backtest_context(state.get("experiment", {}))
+
+    if _extra_context:
+
+        if isinstance(experiment.get("backtest_result"), dict):
+
+            experiment["backtest_result"]["_enriched_analysis"] = _extra_context
+
     result = agent.run({"stage": "audit", "experiment": state["agent_outputs"]})
 
     state["agent_outputs"]["audit"] = result.structured or result.content

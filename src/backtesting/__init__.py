@@ -332,3 +332,56 @@ class BacktestEngine:
             skewness=0, kurtosis=0, return_before_costs_pct=0,
             return_after_costs_pct=0, total_fees_pct=0, total_slippage_pct=0,
         )
+
+    def run_single(self, prices, signals):
+        """Run backtest on a single period (no IS/OOS split). Used by walk-forward."""
+        from dataclasses import dataclass
+
+        returns = prices["close"].pct_change().fillna(0)
+        strategy_returns = returns * signals.shift(1).fillna(0)
+
+        # Apply costs
+        trades = (signals != signals.shift(1)).astype(int)
+        cost_per_trade = self.commission_bps / 10000 + self.slippage_bps / 10000
+        costs = trades * cost_per_trade
+        net_returns = strategy_returns - costs
+
+        # Metrics
+        total_return = float((1 + net_returns).prod() - 1)
+        n_trades = int(trades.sum())
+        vol = float(net_returns.std() * (8760 ** 0.5)) if net_returns.std() > 0 else 0.001
+        mean_ret = float(net_returns.mean() * 8760)
+        sharpe = mean_ret / vol if vol > 0 else 0
+
+        # Drawdown
+        equity = (1 + net_returns).cumprod()
+        peak = equity.cummax()
+        dd = (equity - peak) / peak
+        max_dd = float(dd.min())
+
+        # Win rate
+        trade_rets = net_returns[trades == 1]
+        wins = (trade_rets > 0).sum()
+        win_rate = float(wins / max(len(trade_rets), 1))
+
+        # Profit factor
+        gross_profit = float(trade_rets[trade_rets > 0].sum()) if (trade_rets > 0).any() else 0
+        gross_loss = float(abs(trade_rets[trade_rets < 0].sum())) if (trade_rets < 0).any() else 0.001
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+
+        # Return a result-like object
+        class SingleResult:
+            pass
+
+        r = SingleResult()
+        r.sharpe = sharpe
+        r.total_return = total_return
+        r.max_drawdown = max_dd
+        r.total_trades = n_trades
+        r.win_rate = win_rate
+        r.profit_factor = profit_factor
+        r.volatility = vol
+        r.equity_curve = equity.tolist()
+        r.returns = net_returns.tolist()
+        return r
+

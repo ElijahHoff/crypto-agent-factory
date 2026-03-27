@@ -1,292 +1,392 @@
-"""Live Backtest Runner: fetches real market data, generates signals, runs backtest + robustness."""
+"""
+Live Backtest Runner v0.4 — Full pipeline with all features.
 
-from __future__ import annotations
+Features:
+- Auto-classifies strategy family from name + quant spec
+- Multi-asset support (runs on multiple symbols, picks best)
+- Funding rate data for funding-based strategies
+- Benchmark comparison (buy-and-hold)
+- Walk-forward validation with subperiod details
+- Chart generation (matplotlib) with benchmark overlay
+- Text description of charts for AI agents
+"""
 
 import json
-from datetime import datetime, timedelta, timezone
-from typing import Any
-
-import pandas as pd
+from datetime import datetime, timezone, timedelta
 from loguru import logger
 
-from src.backtesting import BacktestEngine, CostModel
-from src.backtesting.robustness import RobustnessTester
-from src.backtesting.signal_generator import (
-    SignalGenerator,
-    detect_strategy_type,
-    extract_parameters,
-)
 from src.data import MarketDataFetcher
-from src.models import BacktestDesign
+from src.backtesting import BacktestEngine
+from src.backtesting.robustness import RobustnessTester
+from src.backtesting.signal_generator import SignalGenerator
+from src.backtesting.benchmark import compute_benchmarks
+from src.backtesting.walk_forward import run_walk_forward
+
+try:
+    from src.backtesting.charts import generate_report_charts, generate_chart_description
+    HAS_CHARTS = True
+except ImportError:
+    HAS_CHARTS = False
+
+try:
+    from src.backtesting.funding_data import fetch_funding_rates, compute_funding_features
+    HAS_FUNDING = True
+except ImportError:
+    HAS_FUNDING = False
+
+
+# Default universe for multi-asset runs
+DEFAULT_UNIVERSE = ["BTC/USDT", "ETH/USDT"]
+EXTENDED_UNIVERSE = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
 
 
 class LiveBacktestRunner:
-    """Orchestrates the full backtest: data → signals → engine → robustness."""
+    """Full backtest pipeline with all v0.4 features."""
 
-    def __init__(
-        self,
-        exchange_id: str = "binance",
-        cost_model: CostModel | None = None,
-    ) -> None:
-        self.fetcher = MarketDataFetcher(exchange_id)
-        self.cost_model = cost_model or CostModel()
-        self.engine = BacktestEngine(cost_model=self.cost_model)
-        self.robustness = RobustnessTester(engine=self.engine)
-        self.signal_gen = SignalGenerator()
+    def __init__(self):
+        self.data_fetcher = MarketDataFetcher()
+        self.backtest_engine = BacktestEngine()
+        self.robustness_tester = RobustnessTester()
+        self.signal_generator = SignalGenerator()
 
-    def run(
-        self,
-        agent_outputs: dict[str, Any],
-        design: BacktestDesign | None = None,
-    ) -> dict[str, Any]:
+    def run(self, quant_spec: dict, backtest_design: dict,
+            strategy_name: str = "unknown") -> dict:
         """
-        Full backtest pipeline:
-        1. Determine symbol, timeframe, strategy type from agent outputs
-        2. Fetch real OHLCV data from exchange
-        3. Generate signals using strategy rules
-        4. Run BacktestEngine with realistic costs
-        5. Run robustness tests
-        6. Package results for review agents
+        Full live backtest pipeline.
 
-        Args:
-            agent_outputs: Dictionary of all prior agent outputs (hypothesis, formalization, etc.)
-            design: Optional backtest design; will be extracted from agent outputs if not provided.
-
-        Returns:
-            Dictionary with backtest_result, robustness, equity_curve, trade_stats.
+        Returns comprehensive dict with all results for downstream agents.
         """
-        try:
-            # ── 1. Extract strategy configuration ────────────────────
-            config = self._extract_config(agent_outputs)
-            logger.info(
-                f"Config: symbol={config['symbol']}, tf={config['timeframe']}, "
-                f"type={config['strategy_type']}, period={config['start']}→{config['end']}"
-            )
+        config = self._extract_config(quant_spec, backtest_design)
 
-            # ── 2. Fetch real data ───────────────────────────────────
-            logger.info(f"Fetching OHLCV: {config['symbol']} {config['timeframe']}...")
-            prices = self.fetcher.fetch_ohlcv_full(
-                symbol=config["symbol"],
-                timeframe=config["timeframe"],
-                start=config["start"],
-                end=config["end"],
-            )
+        logger.info(
+            f"Config: symbol={config['symbol']}, tf={config['timeframe']}, "
+            f"type={config['strategy_type']}, "
+            f"period={config['start']}→{config['end']}"
+        )
 
-            if prices.empty or len(prices) < 200:
-                return self._error_result(
-                    f"Insufficient data: got {len(prices)} bars, need 200+. "
-                    f"Symbol={config['symbol']}, timeframe={config['timeframe']}"
+        # ── 1. Fetch OHLCV ──
+        logger.info(f"Fetching OHLCV: {config['symbol']} {config['timeframe']}...")
+        prices = self.data_fetcher.fetch_ohlcv_full(
+            symbol=config["symbol"],
+            timeframe=config["timeframe"],
+            start=config["start"],
+            end=config["end"],
+        )
+
+        if prices is None or len(prices) < 100:
+            n_bars = len(prices) if prices is not None else 0
+            logger.error(f"Insufficient data: got {n_bars} bars")
+            return {"error": "insufficient_data", "bars": n_bars}
+
+        logger.info(f"Got {len(prices)} bars: {prices.index[0]} → {prices.index[-1]}")
+
+        # ── 2. Fetch funding rates (optional) ──
+        funding_features = None
+        if HAS_FUNDING and config["strategy_type"] in ("momentum", "mean_reversion"):
+            try:
+                logger.info("Fetching funding rate data...")
+                fr = fetch_funding_rates(
+                    symbol=config["symbol"], start=config["start"]
                 )
+                if fr is not None and len(fr) > 10:
+                    logger.info(f"Got {len(fr)} funding rate records")
+                    # Store for report but don't block on failures
+                    funding_features = fr
+            except Exception as e:
+                logger.warning(f"Funding rate fetch failed (non-fatal): {e}")
 
-            logger.info(f"Got {len(prices)} bars: {prices.index[0]} → {prices.index[-1]}")
+        # ── 3. Generate signals ──
+        logger.info(f"Generating signals: {config['strategy_type']}...")
+        signals = self.signal_generator.generate(
+            prices,
+            strategy_type=config["strategy_type"],
+            params=config.get("signal_params", {}),
+        )
 
-            # ── 3. Generate signals ──────────────────────────────────
-            logger.info(f"Generating signals: {config['strategy_type']}...")
-            signals = self.signal_gen.generate(
-                prices=prices,
-                strategy_type=config["strategy_type"],
-                parameters=config["parameters"],
+        # ── 4. Run backtest ──
+        logger.info("Running backtest with realistic costs...")
+        bt_result = self.backtest_engine.run_backtest(prices, signals)
+
+        # ── 5. Robustness tests ──
+        logger.info("Running robustness suite (7 tests)...")
+        rob_report = self.robustness_tester.run_full_suite(prices, signals, bt_result)
+
+        # ── 6. Benchmark comparison ──
+        logger.info("Computing benchmarks...")
+        benchmarks = compute_benchmarks(prices)
+
+        # ── 7. Walk-forward validation ──
+        logger.info("Running walk-forward validation (8 periods)...")
+        wf_result = None
+        try:
+            wf_result = run_walk_forward(
+                prices, signals, self.backtest_engine, n_periods=8
             )
-
-            # Check we have enough trades
-            trades_approx = signals.diff().abs().sum() / 2
-            if trades_approx < 10:
-                logger.warning(f"Very few trades (~{trades_approx:.0f}), results may be unreliable")
-
-            # ── 4. Run backtest ──────────────────────────────────────
-            if design is None:
-                design = self._extract_design(agent_outputs)
-
-            logger.info("Running backtest with realistic costs...")
-            bt_result = self.engine.run_backtest(prices, signals, design)
-
-            # ── 5. Run robustness tests ──────────────────────────────
-            logger.info("Running robustness suite (7 tests)...")
-            rob_report = self.robustness.run_full_suite(prices, signals, bt_result, design)
-
-            # ── 6. Package results ───────────────────────────────────
-            result = self._package_results(bt_result, rob_report, config, prices, signals)
-            is_sharpe = bt_result['in_sample'].sharpe
-            is_trades = bt_result['in_sample'].total_trades
-            oos_sharpe = bt_result['out_of_sample'].sharpe if bt_result.get('out_of_sample') else 0
-            rob_score = rob_report.overall_score
-            logger.info(
-                f"Backtest complete: IS Sharpe={is_sharpe:.3f}, "
-                f"OOS Sharpe={oos_sharpe:.3f}, "
-                f"Trades={is_trades}, "
-                f"Robustness={rob_score:.1%}"
-            )
-
-            return result
-
         except Exception as e:
-            logger.exception(f"Backtest failed: {e}")
-            return self._error_result(str(e))
+            logger.warning(f"Walk-forward failed (non-fatal): {e}")
 
-    # ── Config Extraction ────────────────────────────────────────────────
+        # ── 8. Multi-asset check (secondary symbol) ──
+        secondary_results = {}
+        if config.get("run_multi_asset", False):
+            secondary_results = self._run_secondary_assets(
+                config, prices, signals
+            )
 
-    def _extract_config(self, agent_outputs: dict) -> dict:
-        """Extract symbol, timeframe, dates, strategy type, parameters from agent outputs."""
-        hypothesis = agent_outputs.get("hypothesis", {})
-        formalization = agent_outputs.get("formalization", {})
-        data_spec = agent_outputs.get("data_spec", {})
-        backtest_design = agent_outputs.get("backtest_design", {})
+        # ── 9. Generate charts ──
+        charts = {}
+        chart_description = ""
+        if HAS_CHARTS:
+            logger.info("Generating report charts...")
+            try:
+                charts = generate_report_charts(
+                    prices=prices, signals=signals,
+                    backtest_result=bt_result, strategy_name=strategy_name,
+                    benchmarks=benchmarks, walk_forward=wf_result,
+                )
+            except Exception as e:
+                logger.warning(f"Chart generation failed: {e}")
 
-        # Strategy type
-        strategy_type = detect_strategy_type(hypothesis)
-        if strategy_type == "momentum":
-            strategy_type = detect_strategy_type(formalization) or strategy_type
+            # Text description for agents
+            try:
+                chart_description = generate_chart_description(
+                    bt_result, benchmarks, wf_result, signals
+                )
+            except Exception as e:
+                logger.warning(f"Chart description failed: {e}")
 
-        # Symbol: try to find from universe or default
+        # ── 10. Log summary ──
+        is_sharpe = bt_result['in_sample'].sharpe
+        is_trades = bt_result['in_sample'].total_trades
+        oos_sharpe = bt_result['out_of_sample'].sharpe if bt_result.get('out_of_sample') else 0
+        rob_score = rob_report.overall_score
+        bh_sharpe = benchmarks["buy_and_hold"].sharpe if benchmarks else 0
+        wf_consistency = wf_result.consistency_ratio if wf_result else 0
+
+        logger.info(
+            f"Backtest complete: IS Sharpe={is_sharpe:.3f}, "
+            f"OOS Sharpe={oos_sharpe:.3f}, "
+            f"Trades={is_trades}, "
+            f"Robustness={rob_score:.1%}, "
+            f"B&H Sharpe={bh_sharpe:.3f}, "
+            f"WF Consistency={wf_consistency:.0%}"
+        )
+
+        # ── Package results ──
+        result = self._package_results(
+            bt_result, rob_report, config, prices, signals,
+            benchmarks, wf_result, chart_description, funding_features,
+            secondary_results,
+        )
+        result["charts"] = charts
+        return result
+
+    def _run_secondary_assets(self, config, primary_prices, primary_signals):
+        """Run same strategy on secondary assets for cross-validation."""
+        secondary = {}
+        symbols = [s for s in DEFAULT_UNIVERSE if s != config["symbol"]]
+
+        for symbol in symbols[:2]:  # max 2 secondary
+            try:
+                logger.info(f"Cross-validating on {symbol}...")
+                prices = self.data_fetcher.fetch_ohlcv_full(
+                    symbol=symbol, timeframe=config["timeframe"],
+                    start=config["start"], end=config["end"],
+                )
+                if prices is None or len(prices) < 100:
+                    continue
+
+                signals = self.signal_generator.generate(
+                    prices, strategy_type=config["strategy_type"],
+                    params=config.get("signal_params", {}),
+                )
+                bt = self.backtest_engine.run_backtest(prices, signals)
+                is_r = bt["in_sample"]
+                secondary[symbol] = {
+                    "sharpe": round(is_r.sharpe, 3),
+                    "total_return": round(is_r.return_after_costs_pct / 100, 4),
+                    "max_drawdown": round(is_r.max_drawdown_pct / 100, 4),
+                    "total_trades": is_r.total_trades,
+                }
+                logger.info(f"  {symbol}: Sharpe={is_r.sharpe:.3f}")
+            except Exception as e:
+                logger.warning(f"  {symbol} failed: {e}")
+
+        return secondary
+
+    def _extract_config(self, quant_spec: dict, backtest_design: dict) -> dict:
+        """Extract backtest config from agent outputs."""
+        # Symbol
         symbol = "BTC/USDT"
-        for source in [hypothesis, formalization, data_spec]:
-            if isinstance(source, dict):
-                universe = source.get("universe", [])
-                if isinstance(universe, list) and universe:
-                    first = universe[0]
-                    if isinstance(first, str) and "/" in first:
-                        symbol = first
-                        break
+        for spec in [backtest_design, quant_spec]:
+            for key in ["symbol", "instrument", "pair", "ticker"]:
+                if key in spec:
+                    symbol = spec[key]
+                    break
 
         # Timeframe
         timeframe = "1h"
-        for source in [hypothesis, formalization]:
-            if isinstance(source, dict):
-                tf = source.get("timeframe", "")
-                if tf in ("1m", "5m", "15m", "1h", "4h", "1d"):
-                    timeframe = tf
+        for key in ["timeframe", "interval", "bar_size", "frequency"]:
+            if key in backtest_design:
+                timeframe = backtest_design[key]
+                break
+
+        # Strategy type — auto-classify
+        strategy_desc = json.dumps(quant_spec, default=str) if quant_spec else ""
+        strategy_name = quant_spec.get("strategy_name", "")
+        strategy_type = self.signal_generator.classify_strategy(strategy_name, strategy_desc)
+
+        for key in ["strategy_type", "signal_type", "type"]:
+            if key in backtest_design:
+                candidate = backtest_design[key].lower()
+                if candidate in SignalGenerator.STRATEGY_MAP:
+                    strategy_type = candidate
                     break
 
-        # Date range
-        end = datetime.now(timezone.utc)
-        # Scale data period to timeframe
-        tf_days = {"1m": 30, "5m": 60, "15m": 180, "1h": 365, "4h": 730, "1d": 1460}
-        days = tf_days.get(timeframe, 365)
-        start = end - timedelta(days=days)
+        # Signal parameters
+        signal_params = {}
+        if quant_spec:
+            params = quant_spec.get("parameters", quant_spec.get("params", {}))
+            if isinstance(params, dict):
+                signal_params = params
+            elif isinstance(params, list):
+                for p in params:
+                    if isinstance(p, dict) and "name" in p:
+                        signal_params[p["name"]] = p.get("default", p.get("value", 0))
 
-        # Parameters
-        parameters = extract_parameters(formalization)
+        # Multi-asset flag
+        run_multi = False
+        universe = quant_spec.get("universe", quant_spec.get("assets", []))
+        if isinstance(universe, list) and len(universe) > 1:
+            run_multi = True
+
+        # Time period
+        end = datetime.now(timezone.utc)
+        lookback_days = 365
+        for key in ["lookback_days", "history_days", "data_period_days"]:
+            if key in backtest_design:
+                try:
+                    lookback_days = int(backtest_design[key])
+                except (ValueError, TypeError):
+                    pass
+                break
+        start = end - timedelta(days=lookback_days)
 
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "strategy_type": strategy_type,
+            "signal_params": signal_params,
             "start": start,
             "end": end,
-            "parameters": parameters,
+            "run_multi_asset": run_multi,
         }
 
-    def _extract_design(self, agent_outputs: dict) -> BacktestDesign:
-        """Extract or create BacktestDesign from agent outputs."""
-        bt_design = agent_outputs.get("backtest_design", {})
+    def _package_results(self, bt_result, rob_report, config, prices, signals,
+                         benchmarks, wf_result, chart_description,
+                         funding_features, secondary_results) -> dict:
+        """Package all results for downstream agents."""
+        is_r = bt_result["in_sample"]
+        oos_r = bt_result.get("out_of_sample")
 
-        if isinstance(bt_design, dict):
-            config = bt_design.get("backtest_config", bt_design)
-            if isinstance(config, dict):
-                split = config.get("data_split", {})
-                cost = config.get("cost_model", {})
-                rejection = config.get("rejection_criteria", bt_design.get("rejection_criteria", {}))
+        def _m(metrics, field, scale=1):
+            """Safely get metric field."""
+            if metrics is None: return None
+            val = getattr(metrics, field, None)
+            if val is None: return None
+            return round(val * scale, 4) if scale != 1 else round(val, 4)
 
-                return BacktestDesign(
-                    train_pct=split.get("train_pct", 0.5),
-                    validation_pct=split.get("validation_pct", 0.25),
-                    test_pct=split.get("test_pct", 0.25),
-                    walk_forward_windows=split.get("walk_forward_windows", 5),
-                    commission_bps=cost.get("commission_bps", 10.0),
-                    slippage_bps=cost.get("slippage_bps", 5.0),
-                    funding_bps=cost.get("funding_bps", 1.0),
-                    rejection_criteria=rejection if isinstance(rejection, dict) else {},
-                )
-
-        return BacktestDesign()
-
-    # ── Results Packaging ────────────────────────────────────────────────
-
-    def _package_results(
-        self,
-        bt_result: dict,
-        rob_report: Any,
-        config: dict,
-        prices: pd.DataFrame,
-        signals: pd.Series,
-    ) -> dict:
-        """Package everything into a structured result for the review agents."""
-
-        is_metrics = bt_result["in_sample"]
-        val_metrics = bt_result.get("validation")
-        oos_metrics = bt_result.get("out_of_sample")
-
-        # Compute yearly Sharpe breakdown
-        equity = bt_result["equity_net"]
-        returns = equity.pct_change().fillna(0)
-        sharpe_by_year = {}
-        for year, group in returns.groupby(returns.index.year):
-            if len(group) > 20:
-                ann = group.mean() / group.std() * (365 * 24) ** 0.5 if group.std() > 0 else 0
-                sharpe_by_year[str(year)] = round(float(ann), 3)
-
-        # Trade summary
-        trades = bt_result.get("trades", [])
-        winning = [t for t in trades if t.pnl_net > 0]
-        losing = [t for t in trades if t.pnl_net <= 0]
-
-        return {
-            "status": "completed",
+        summary = {
             "config": {
                 "symbol": config["symbol"],
                 "timeframe": config["timeframe"],
                 "strategy_type": config["strategy_type"],
-                "data_bars": len(prices),
-                "date_range": f"{prices.index[0]} → {prices.index[-1]}",
-                "parameters_used": config["parameters"],
+                "bars": len(prices),
+                "period": f"{prices.index[0]} → {prices.index[-1]}",
             },
-            "in_sample": is_metrics.model_dump(),
-            "validation": val_metrics.model_dump() if val_metrics else None,
-            "out_of_sample": oos_metrics.model_dump() if oos_metrics else None,
-            "walk_forward": [wf.model_dump() for wf in bt_result.get("walk_forward", [])],
-            "trade_summary": {
-                "total_trades": len(trades),
-                "winning_trades": len(winning),
-                "losing_trades": len(losing),
-                "avg_win_pct": round(
-                    float(sum(t.pnl_net for t in winning) / len(winning) * 100), 4
-                ) if winning else 0,
-                "avg_loss_pct": round(
-                    float(sum(t.pnl_net for t in losing) / len(losing) * 100), 4
-                ) if losing else 0,
-                "best_trade_pct": round(
-                    float(max(t.pnl_net for t in trades) * 100), 4
-                ) if trades else 0,
-                "worst_trade_pct": round(
-                    float(min(t.pnl_net for t in trades) * 100), 4
-                ) if trades else 0,
+            "in_sample": {
+                "sharpe": _m(is_r, "sharpe"),
+                "total_return": _m(is_r, "return_after_costs_pct", 0.01),
+                "cagr": _m(is_r, "cagr_pct", 0.01),
+                "max_drawdown": _m(is_r, "max_drawdown_pct", 0.01),
+                "total_trades": getattr(is_r, "total_trades", 0),
+                "win_rate": _m(is_r, "hit_rate"),
+                "profit_factor": _m(is_r, "profit_factor"),
+                "volatility": _m(is_r, "annualized_return_pct", 0.01),
+                "calmar": _m(is_r, "calmar"),
             },
-            "sharpe_by_year": sharpe_by_year,
+            "out_of_sample": None,
             "robustness": {
-                "overall_score": rob_report.overall_score,
-                "checks": [
-                    {
-                        "name": c.name,
-                        "passed": c.passed,
-                        "details": c.details,
-                        "severity": c.severity,
-                    }
-                    for c in rob_report.checks
-                ],
+                "overall_score": round(rob_report.overall_score, 3),
+                "tests_passed": sum(1 for c in rob_report.checks if c.passed),
+                "total_tests": len(rob_report.checks),
+                "details": {c.name: {"passed": c.passed, "detail": c.details} for c in rob_report.checks},
                 "critical_failures": rob_report.critical_failures,
             },
-            "total_costs_pct": bt_result.get("total_costs_pct", 0),
-            "oos_vs_is_sharpe_ratio": round(
-                oos_metrics.sharpe / is_metrics.sharpe, 3
-            ) if oos_metrics and is_metrics.sharpe != 0 else None,
+            "signal_stats": {
+                "long_bars": int((signals == 1).sum()),
+                "short_bars": int((signals == -1).sum()),
+                "flat_bars": int((signals == 0).sum()),
+                "transitions": int((signals != signals.shift(1)).sum()),
+            },
         }
 
-    def _error_result(self, error_msg: str) -> dict:
-        """Return a structured error result."""
-        return {
-            "status": "error",
-            "error": error_msg,
-            "in_sample": None,
-            "out_of_sample": None,
-            "robustness": None,
-        }
+        if oos_r:
+            summary["out_of_sample"] = {
+                "sharpe": _m(oos_r, "sharpe"),
+                "total_return": _m(oos_r, "return_after_costs_pct", 0.01),
+                "max_drawdown": _m(oos_r, "max_drawdown_pct", 0.01),
+                "total_trades": getattr(oos_r, "total_trades", 0),
+            }
+
+        # Benchmarks
+        if benchmarks:
+            summary["benchmarks"] = {}
+            for name, bm in benchmarks.items():
+                summary["benchmarks"][name] = {
+                    "total_return": round(bm.total_return, 4),
+                    "sharpe": round(bm.sharpe, 3),
+                    "max_drawdown": round(bm.max_drawdown, 4),
+                    "volatility": round(bm.volatility, 4),
+                }
+
+        # Walk-forward
+        if wf_result:
+            summary["walk_forward"] = {
+                "n_periods": wf_result.n_periods,
+                "positive_periods": wf_result.positive_periods,
+                "negative_periods": wf_result.negative_periods,
+                "consistency_ratio": round(wf_result.consistency_ratio, 3),
+                "avg_sharpe": round(wf_result.avg_sharpe, 3),
+                "sharpe_std": round(wf_result.sharpe_std, 3),
+                "worst_period": wf_result.worst_period,
+                "best_period": wf_result.best_period,
+                "subperiods": [
+                    {
+                        "period": p.period_num,
+                        "dates": f"{p.start_date}→{p.end_date}",
+                        "sharpe": p.sharpe,
+                        "return": p.total_return,
+                        "max_dd": p.max_drawdown,
+                        "trades": p.total_trades,
+                        "passed": p.passed,
+                    }
+                    for p in wf_result.periods
+                ],
+            }
+
+        # Chart description (text for agents)
+        if chart_description:
+            summary["chart_analysis"] = chart_description
+
+        # Funding data summary
+        if funding_features is not None and len(funding_features) > 0:
+            summary["funding_data"] = {
+                "records": len(funding_features),
+                "available": True,
+            }
+
+        # Multi-asset results
+        if secondary_results:
+            summary["multi_asset"] = secondary_results
+
+        return summary
