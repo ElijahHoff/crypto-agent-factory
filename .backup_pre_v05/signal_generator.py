@@ -1,8 +1,8 @@
 """
-Signal Generator v0.5 — Multi-strategy signal generation with fixed classification.
+Signal Generator v0.4 — Multi-strategy signal generation.
 
-Fix: classifier now scores by keyword count with priority weighting.
-"liquidation_mean_reversion" → mean_reversion (not momentum).
+Supports: momentum, mean_reversion, breakout, volatility, trend_following
+Each produces genuinely different trading signals from OHLCV data.
 """
 
 import numpy as np
@@ -21,53 +21,37 @@ class SignalGenerator:
         "trend_following": "_trend_following_signals",
     }
 
-    # Priority-weighted keywords (higher weight = stronger signal)
     _FAMILY_KEYWORDS = {
-        "mean_reversion": {
-            3: ["mean_reversion", "mean reversion", "bollinger_mean", "zscore_reversion"],
-            2: ["reversion", "contrarian", "oversold", "overbought", "bollinger", "z-score", "zscore"],
-            1: ["liquidation", "dip", "fade", "rsi", "bounce"],
-        },
-        "breakout": {
-            3: ["channel_breakout", "range_breakout", "donchian_breakout"],
-            2: ["breakout", "break_out", "squeeze", "donchian", "keltner"],
-            1: ["range", "channel", "expansion", "compression"],
-        },
-        "volatility": {
-            3: ["vol_regime", "volatility_regime", "garch_vol"],
-            2: ["volatility", "garch", "vol_switch", "vol_smile"],
-            1: ["vol_", "vix", "atr", "straddle", "gamma", "implied_vol"],
-        },
-        "trend_following": {
-            3: ["trend_following", "ema_cross", "triple_ema"],
-            2: ["trend", "supertrend", "ichimoku", "macd", "adx"],
-            1: ["moving_average", "ema", "sma_cross"],
-        },
-        "momentum": {
-            3: ["cross_sectional_momentum", "relative_strength_momentum"],
-            2: ["momentum", "relative_strength", "roc"],
-            1: ["funding_rate", "carry", "basis"],
-        },
+        "mean_reversion": [
+            "mean_reversion", "mean reversion", "reversion", "contrarian",
+            "oversold", "overbought", "rsi", "bollinger", "z-score", "zscore",
+            "liquidation", "dip", "fade",
+        ],
+        "breakout": [
+            "breakout", "break_out", "range", "squeeze", "keltner",
+            "donchian", "channel", "expansion", "compression",
+        ],
+        "volatility": [
+            "volatility", "vol_", "vix", "garch", "atr", "straddle",
+            "gamma", "implied_vol", "realised_vol", "vol_smile",
+        ],
+        "trend_following": [
+            "trend", "trend_following", "moving_average", "ema_cross",
+            "supertrend", "ichimoku", "macd", "adx",
+        ],
+        "momentum": [
+            "momentum", "cross_sectional", "relative_strength",
+            "funding_rate", "carry", "basis", "roc",
+        ],
     }
 
     def classify_strategy(self, strategy_name: str, description: str = "") -> str:
-        """Auto-detect strategy family from name + description with weighted scoring."""
         text = f"{strategy_name} {description}".lower()
         scores = {}
-        for family, weight_groups in self._FAMILY_KEYWORDS.items():
-            score = 0
-            for weight, keywords in weight_groups.items():
-                for kw in keywords:
-                    if kw in text:
-                        score += weight
-            scores[family] = score
-
+        for family, keywords in self._FAMILY_KEYWORDS.items():
+            scores[family] = sum(1 for kw in keywords if kw in text)
         best = max(scores, key=scores.get)
-        if scores[best] == 0:
-            return "momentum"
-
-        logger.debug(f"Strategy classification: {strategy_name} → {best} (scores: {scores})")
-        return best
+        return best if scores[best] > 0 else "momentum"
 
     def generate(self, prices: pd.DataFrame, strategy_type: str = "momentum",
                  params: dict | None = None) -> pd.Series:
@@ -76,18 +60,18 @@ class SignalGenerator:
         method = getattr(self, method_name)
         logger.info(f"Generating signals: type={strategy_type}, generator={method_name}")
         signals = method(prices, params)
-        n_long = int((signals == 1).sum())
-        n_short = int((signals == -1).sum())
-        n_flat = int((signals == 0).sum())
+        n_long = (signals == 1).sum()
+        n_short = (signals == -1).sum()
+        n_flat = (signals == 0).sum()
         logger.info(f"Signals: {n_long} long, {n_short} short, {n_flat} flat bars")
         return signals
 
     # ────────────────────── MOMENTUM ──────────────────────
     def _momentum_signals(self, prices: pd.DataFrame, params: dict) -> pd.Series:
-        fast = int(params.get("fast_period", 20))
-        slow = int(params.get("slow_period", 50))
-        roc_period = int(params.get("roc_period", 14))
-        roc_threshold = float(params.get("roc_threshold", 0.0))
+        fast = params.get("fast_period", 20)
+        slow = params.get("slow_period", 50)
+        roc_period = params.get("roc_period", 14)
+        roc_threshold = params.get("roc_threshold", 0.0)
         close = prices["close"]
         sma_fast = close.rolling(fast).mean()
         sma_slow = close.rolling(slow).mean()
@@ -99,9 +83,9 @@ class SignalGenerator:
 
     # ────────────────────── MEAN REVERSION ──────────────────────
     def _mean_reversion_signals(self, prices: pd.DataFrame, params: dict) -> pd.Series:
-        lookback = int(params.get("lookback", 20))
-        entry_z = float(params.get("entry_z", 2.0))
-        exit_z = float(params.get("exit_z", 0.5))
+        lookback = params.get("lookback", 20)
+        entry_z = params.get("entry_z", 2.0)
+        exit_z = params.get("exit_z", 0.5)
         close = prices["close"]
         volume = prices["volume"]
         rolling_mean = close.rolling(lookback).mean()
@@ -112,6 +96,7 @@ class SignalGenerator:
         signals = pd.Series(0, index=prices.index)
         signals[(z_score < -entry_z) & vol_filter] = 1
         signals[(z_score > entry_z) & vol_filter] = -1
+        signals[(z_score > -exit_z) & (z_score < exit_z)] = 0
         return self._apply_state_machine(signals, z_score, entry_z, exit_z)
 
     def _apply_state_machine(self, raw_signals, z_score, entry_z, exit_z):
@@ -120,26 +105,29 @@ class SignalGenerator:
         for i in range(len(signals)):
             z = z_score.iloc[i]
             if np.isnan(z):
+                signals.iloc[i] = 0
                 continue
             if position == 0:
                 if z < -entry_z:
                     position = 1
                 elif z > entry_z:
                     position = -1
-            elif position == 1 and z > -exit_z:
-                position = 0
-            elif position == -1 and z < exit_z:
-                position = 0
+            elif position == 1:
+                if z > -exit_z:
+                    position = 0
+            elif position == -1:
+                if z < exit_z:
+                    position = 0
             signals.iloc[i] = position
         return signals
 
     # ────────────────────── BREAKOUT ──────────────────────
     def _breakout_signals(self, prices: pd.DataFrame, params: dict) -> pd.Series:
-        channel = int(params.get("channel_period", 20))
-        atr_period = int(params.get("atr_period", 14))
+        channel_period = params.get("channel_period", 20)
+        atr_period = params.get("atr_period", 14)
         high, low, close = prices["high"], prices["low"], prices["close"]
-        upper = high.rolling(channel).max()
-        lower = low.rolling(channel).min()
+        upper = high.rolling(channel_period).max()
+        lower = low.rolling(channel_period).min()
         mid = (upper + lower) / 2
         tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
         atr = tr.rolling(atr_period).mean()
@@ -156,6 +144,7 @@ class SignalGenerator:
             raw = raw_signals.iloc[i]
             c, m = close.iloc[i], mid.iloc[i]
             if np.isnan(m):
+                signals.iloc[i] = 0
                 continue
             if raw != 0 and position == 0:
                 position = raw
@@ -168,10 +157,10 @@ class SignalGenerator:
 
     # ────────────────────── VOLATILITY ──────────────────────
     def _volatility_signals(self, prices: pd.DataFrame, params: dict) -> pd.Series:
-        short_w = int(params.get("short_vol_window", 10))
-        long_w = int(params.get("long_vol_window", 30))
-        squeeze_th = float(params.get("squeeze_threshold", 0.6))
-        exp_mult = float(params.get("expansion_multiplier", 1.5))
+        short_w = params.get("short_vol_window", 10)
+        long_w = params.get("long_vol_window", 30)
+        squeeze_th = params.get("squeeze_threshold", 0.6)
+        exp_mult = params.get("expansion_multiplier", 1.5)
         close = prices["close"]
         returns = close.pct_change()
         short_vol = returns.rolling(short_w).std() * np.sqrt(365 * 24)
@@ -183,7 +172,7 @@ class SignalGenerator:
         trend_up = close > sma_20
         trend_down = close < sma_20
         signals = pd.Series(0, index=prices.index)
-        squeeze_ended = in_squeeze.shift(1).fillna(False) & ~in_squeeze
+        squeeze_ended = in_squeeze.shift(1) & ~in_squeeze
         signals[squeeze_ended & trend_up] = 1
         signals[squeeze_ended & trend_down] = -1
         signals[expanding & trend_up & ~in_squeeze] = 1
@@ -192,11 +181,11 @@ class SignalGenerator:
 
     # ────────────────────── TREND FOLLOWING ──────────────────────
     def _trend_following_signals(self, prices: pd.DataFrame, params: dict) -> pd.Series:
-        fast_ema = int(params.get("fast_ema", 12))
-        mid_ema = int(params.get("mid_ema", 26))
-        slow_ema = int(params.get("slow_ema", 50))
-        adx_period = int(params.get("adx_period", 14))
-        adx_threshold = float(params.get("adx_threshold", 25))
+        fast_ema = params.get("fast_ema", 12)
+        mid_ema = params.get("mid_ema", 26)
+        slow_ema = params.get("slow_ema", 50)
+        adx_period = params.get("adx_period", 14)
+        adx_threshold = params.get("adx_threshold", 25)
         close = prices["close"]
         high, low = prices["high"], prices["low"]
         ema_f = close.ewm(span=fast_ema).mean()
@@ -210,13 +199,16 @@ class SignalGenerator:
         return signals
 
     def _compute_adx(self, high, low, close, period):
-        plus_dm = high.diff().clip(lower=0)
-        minus_dm = (-low.diff()).clip(lower=0)
-        plus_dm[plus_dm < minus_dm] = 0
-        minus_dm[minus_dm < plus_dm] = 0
+        plus_dm = high.diff()
+        minus_dm = -low.diff()
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm < 0] = 0
+        plus_dm[(plus_dm < minus_dm)] = 0
+        minus_dm[(minus_dm < plus_dm)] = 0
         tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
         atr = tr.ewm(span=period).mean()
         plus_di = 100 * (plus_dm.ewm(span=period).mean() / atr)
         minus_di = 100 * (minus_dm.ewm(span=period).mean() / atr)
         dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-        return dx.ewm(span=period).mean().fillna(0)
+        adx = dx.ewm(span=period).mean()
+        return adx.fillna(0)

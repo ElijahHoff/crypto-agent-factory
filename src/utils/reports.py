@@ -1,8 +1,7 @@
 """
-Report Generator v0.4 — Comprehensive markdown reports.
+Report Generator v0.5 — Crash-proof markdown reports.
 
-Includes: executive summary, key metrics table, benchmark comparison,
-walk-forward subperiod table, robustness details, charts, agent reviews.
+NEVER crashes on None/missing data. Always produces a valid report.
 """
 
 from datetime import datetime
@@ -11,295 +10,228 @@ from loguru import logger
 
 
 def generate_report(experiment: dict, output_dir: str = "experiments") -> str:
-    """Generate comprehensive markdown report from pipeline results."""
+    """Generate markdown report. Never crashes — handles all None cases."""
     name = experiment.get("strategy_name", "unknown")
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    hypothesis = experiment.get("hypothesis", {})
-    quant_spec = experiment.get("quant_formalization", {})
-    backtest = experiment.get("backtest_result", {})
-    robustness = experiment.get("robustness", backtest.get("robustness", {}))
-    risk_review = experiment.get("risk_review", {})
-    stat_validation = experiment.get("statistical_validation", {})
-    audit = experiment.get("audit", {})
-    decision = experiment.get("decision", {})
-    if isinstance(decision, str):
-        decision = {"decision": decision, "reasoning": decision}
-    if decision is None:
-        decision = {}
-    charts = backtest.get("charts", experiment.get("charts", {}))
-    config = backtest.get("config", {})
-    benchmarks = backtest.get("benchmarks", {})
-    walk_forward = backtest.get("walk_forward", {})
-    multi_asset = backtest.get("multi_asset", {})
+    # Safe extraction with fallbacks
+    hypothesis = _dict(experiment.get("hypothesis"))
+    backtest = _dict(experiment.get("backtest_result"))
+    risk_review = _dict(experiment.get("risk_review"))
+    stat_validation = _dict(experiment.get("statistical_validation"))
+    audit = _dict(experiment.get("audit"))
+    decision = _dict(experiment.get("decision"))
+    charts = _dict(backtest.get("charts") or experiment.get("charts"))
+    config = _dict(backtest.get("config"))
+    benchmarks = _dict(backtest.get("benchmarks"))
+    walk_forward = _dict(backtest.get("walk_forward"))
+    is_data = _dict(backtest.get("in_sample"))
+    oos_data = _dict(backtest.get("out_of_sample"))
+    signal_stats = _dict(backtest.get("signal_stats"))
+    robustness = _dict(backtest.get("robustness"))
     chart_analysis = backtest.get("chart_analysis", "")
 
-    sections = []
+    s = []  # sections
 
-    # ─── Header ───
-    verdict = decision.get("decision", "N/A").upper()
+    # Header
+    verdict = decision.get("decision", "UNKNOWN")
+    if isinstance(verdict, str):
+        verdict = verdict.upper()
     confidence = decision.get("confidence_level", "N/A")
-    emoji = "🟢" if verdict == "ACCEPT" else "🟡" if verdict == "CONDITIONAL" else "🔴"
-    sections.append(f"# Strategy Report: {name}")
-    sections.append(f"**Generated**: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
-    sections.append(f"**Verdict**: {emoji} **{verdict}** (confidence: {confidence})")
-    sections.append("")
+    emoji = "🟢" if verdict == "ACCEPT" else "🔴" if verdict == "REJECT" else "🟡"
+    s.append(f"# Strategy Report: {name}")
+    s.append(f"**Generated**: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    s.append(f"**Verdict**: {emoji} **{verdict}** (confidence: {confidence})\n")
 
-    # ─── Executive Summary ───
-    sections.append("## Executive Summary")
-    if decision.get("reasoning"):
-        sections.append(decision["reasoning"])
-    sections.append("")
+    # Executive Summary
+    s.append("## Executive Summary")
+    s.append(decision.get("reasoning", "_No decision provided — agents may have encountered API errors._") + "\n")
 
-    # ─── Key Metrics Table ───
-    sections.append("## Key Metrics")
-    is_data = backtest.get("in_sample") or {}
-    oos_data = backtest.get("out_of_sample") or {}
-    signal_stats = backtest.get("signal_stats", {})
+    # Key Metrics
+    s.append("## Key Metrics\n")
+    s.append("| Metric | In-Sample | Out-of-Sample |")
+    s.append("|--------|-----------|---------------|")
+    _row(s, "Sharpe Ratio", is_data.get("sharpe"), oos_data.get("sharpe"))
+    _row(s, "Total Return", is_data.get("total_return"), oos_data.get("total_return"), pct=True)
+    _row(s, "CAGR", is_data.get("cagr"), None, pct=True)
+    _row(s, "Max Drawdown", is_data.get("max_drawdown"), oos_data.get("max_drawdown"), pct=True)
+    _row(s, "Total Trades", is_data.get("total_trades"), oos_data.get("total_trades"), fmt="d")
+    _row(s, "Win Rate", is_data.get("win_rate"), None, pct=True)
+    _row(s, "Profit Factor", is_data.get("profit_factor"), None)
+    _row(s, "Calmar", is_data.get("calmar"), None)
+    _row(s, "Sortino", is_data.get("sortino"), None)
+    s.append("")
 
-    sections.append("| Metric | In-Sample | Out-of-Sample |")
-    sections.append("|--------|-----------|---------------|")
-    _row(sections, "Sharpe Ratio", is_data.get("sharpe"), _oos(oos_data, "sharpe"))
-    _row(sections, "Total Return", is_data.get("total_return"), _oos(oos_data, "total_return"), fmt=".2%")
-    _row(sections, "CAGR", is_data.get("cagr"), None, fmt=".2%")
-    _row(sections, "Max Drawdown", is_data.get("max_drawdown"), _oos(oos_data, "max_drawdown"), fmt=".2%")
-    _row(sections, "Total Trades", is_data.get("total_trades"), _oos(oos_data, "total_trades"), fmt="d")
-    _row(sections, "Win Rate", is_data.get("win_rate"), None, fmt=".1%")
-    _row(sections, "Profit Factor", is_data.get("profit_factor"), None)
-    _row(sections, "Calmar Ratio", is_data.get("calmar"), None)
-    _row(sections, "Volatility (ann.)", is_data.get("volatility"), None, fmt=".2%")
-    sections.append("")
-
-    # Config
     if config:
-        sections.append("**Config:**")
-        sections.append(f"- Symbol: `{config.get('symbol', 'N/A')}`")
-        sections.append(f"- Timeframe: `{config.get('timeframe', 'N/A')}`")
-        sections.append(f"- Strategy Type: `{config.get('strategy_type', 'N/A')}`")
-        sections.append(f"- Bars: {config.get('bars', 'N/A')}")
-        sections.append(f"- Period: {config.get('period', 'N/A')}")
+        s.append(f"**Config**: `{config.get('symbol', '?')}` / `{config.get('timeframe', '?')}` / "
+                 f"`{config.get('strategy_type', '?')}` / {config.get('bars', '?')} bars")
+        s.append(f"**Period**: {config.get('period', 'N/A')}")
     if signal_stats:
-        long_b = signal_stats.get("long_bars", 0)
-        short_b = signal_stats.get("short_bars", 0)
-        flat_b = signal_stats.get("flat_bars", 0)
-        trans = signal_stats.get("transitions", 0)
-        sections.append(f"- Signals: {long_b} long / {short_b} short / {flat_b} flat ({trans} transitions)")
-    sections.append("")
+        s.append(f"**Signals**: {signal_stats.get('long_bars', 0)} long / "
+                 f"{signal_stats.get('short_bars', 0)} short / "
+                 f"{signal_stats.get('flat_bars', 0)} flat "
+                 f"({signal_stats.get('transitions', 0)} transitions)")
+    s.append("")
 
-    # ─── Benchmark Comparison ───
+    # Benchmark Comparison
     if benchmarks:
-        sections.append("## Benchmark Comparison")
-        sections.append("| Benchmark | Return | Sharpe | Max DD | Volatility |")
-        sections.append("|-----------|--------|--------|--------|------------|")
-        # Strategy row first
-        s_ret = is_data.get("total_return", 0)
-        s_sharpe = is_data.get("sharpe", 0)
-        s_dd = is_data.get("max_drawdown", 0)
-        s_vol = is_data.get("volatility", 0)
-        sections.append(f"| **Strategy** | {_fv(s_ret, '.2%')} | {_fv(s_sharpe)} | {_fv(s_dd, '.2%')} | {_fv(s_vol, '.2%')} |")
-        for bm_name, bm_data in benchmarks.items():
-            if isinstance(bm_data, dict):
-                sections.append(
-                    f"| {bm_name.replace('_', ' ').title()} | "
-                    f"{_fv(bm_data.get('total_return'), '.2%')} | "
-                    f"{_fv(bm_data.get('sharpe'))} | "
-                    f"{_fv(bm_data.get('max_drawdown'), '.2%')} | "
-                    f"{_fv(bm_data.get('volatility'), '.2%')} |"
-                )
-        sections.append("")
-
-        # Verdict
+        s.append("## Benchmark Comparison\n")
+        s.append("| Benchmark | Return | Sharpe | Max DD |")
+        s.append("|-----------|--------|--------|--------|")
+        s.append(f"| **Strategy** | {_fv(is_data.get('total_return'), pct=True)} | "
+                 f"{_fv(is_data.get('sharpe'))} | {_fv(is_data.get('max_drawdown'), pct=True)} |")
+        for bm_name, bm in benchmarks.items():
+            if isinstance(bm, dict):
+                s.append(f"| {bm_name.replace('_',' ').title()} | "
+                         f"{_fv(bm.get('total_return'), pct=True)} | "
+                         f"{_fv(bm.get('sharpe'))} | "
+                         f"{_fv(bm.get('max_drawdown'), pct=True)} |")
         bh = benchmarks.get("buy_and_hold", {})
-        if bh:
-            bh_sharpe = bh.get("sharpe", 0)
-            if s_sharpe > bh_sharpe:
-                sections.append(f"✅ Strategy Sharpe ({s_sharpe:.3f}) **beats** Buy & Hold ({bh_sharpe:.3f})")
+        if isinstance(bh, dict) and bh.get("sharpe") is not None and is_data.get("sharpe") is not None:
+            if is_data["sharpe"] > bh["sharpe"]:
+                s.append(f"\n✅ Strategy Sharpe ({is_data['sharpe']:.3f}) **beats** Buy & Hold ({bh['sharpe']:.3f})")
             else:
-                sections.append(f"❌ Strategy Sharpe ({s_sharpe:.3f}) **loses to** Buy & Hold ({bh_sharpe:.3f})")
-        sections.append("")
+                s.append(f"\n❌ Strategy Sharpe ({is_data['sharpe']:.3f}) **loses to** Buy & Hold ({bh['sharpe']:.3f})")
+        s.append("")
 
-    # ─── Walk-Forward Analysis ───
+    # Walk-Forward
     if walk_forward:
-        sections.append("## Walk-Forward Analysis")
+        s.append("## Walk-Forward Analysis\n")
         n_per = walk_forward.get("n_periods", 0)
         pos = walk_forward.get("positive_periods", 0)
-        neg = walk_forward.get("negative_periods", 0)
         cons = walk_forward.get("consistency_ratio", 0)
         avg_s = walk_forward.get("avg_sharpe", 0)
         std_s = walk_forward.get("sharpe_std", 0)
+        s.append(f"**{pos}/{n_per} periods positive** (consistency: {cons:.0%})")
+        s.append(f"Average Sharpe: {avg_s:.3f} ± {std_s:.3f}\n")
 
-        sections.append(f"**{pos}/{n_per} periods positive** (consistency: {cons:.0%})")
-        sections.append(f"Average Sharpe: {avg_s:.3f} ± {std_s:.3f}")
-        sections.append("")
+        subs = walk_forward.get("subperiods", [])
+        if subs:
+            s.append("| Period | Dates | Sharpe | Return | Max DD | Trades | ✓ |")
+            s.append("|--------|-------|--------|--------|--------|--------|---|")
+            for sp in subs:
+                ok = "✅" if sp.get("passed") else "❌"
+                s.append(f"| P{sp.get('period','?')} | {sp.get('dates','')} | "
+                         f"{_fv(sp.get('sharpe'))} | {_fv(sp.get('return'), pct=True)} | "
+                         f"{_fv(sp.get('max_dd'), pct=True)} | {sp.get('trades',0)} | {ok} |")
+        s.append("")
 
-        subperiods = walk_forward.get("subperiods", [])
-        if subperiods:
-            sections.append("| Period | Dates | Sharpe | Return | Max DD | Trades | Status |")
-            sections.append("|--------|-------|--------|--------|--------|--------|--------|")
-            for sp in subperiods:
-                status = "✅" if sp.get("passed") else "❌"
-                sections.append(
-                    f"| P{sp.get('period', '?')} | {sp.get('dates', '')} | "
-                    f"{_fv(sp.get('sharpe'))} | {_fv(sp.get('return'), '.2%')} | "
-                    f"{_fv(sp.get('max_dd'), '.2%')} | {sp.get('trades', 0)} | {status} |"
-                )
-        sections.append("")
-
-        # Best/worst
-        best = walk_forward.get("best_period", {})
-        worst = walk_forward.get("worst_period", {})
-        if best:
-            sections.append(f"**Best**: P{best.get('period_num', '?')} "
-                          f"({best.get('start_date', '')}→{best.get('end_date', '')}) "
-                          f"Sharpe={best.get('sharpe', 0):.3f}")
-        if worst:
-            sections.append(f"**Worst**: P{worst.get('period_num', '?')} "
-                          f"({worst.get('start_date', '')}→{worst.get('end_date', '')}) "
-                          f"Sharpe={worst.get('sharpe', 0):.3f}")
-        sections.append("")
-
-    # ─── Performance Charts ───
+    # Charts
     if charts:
-        sections.append("## Performance Charts")
-        for chart_name, chart_path in charts.items():
-            rel = Path(chart_path).name
-            label = chart_name.replace("_", " ").title()
-            sections.append(f"### {label}")
-            sections.append(f"![{label}]({rel})")
-            sections.append("")
+        s.append("## Performance Charts\n")
+        for cn, cp in charts.items():
+            label = cn.replace("_", " ").title()
+            s.append(f"![{label}]({Path(cp).name})\n")
 
-    # ─── Chart Analysis (text) ───
+    # Chart Analysis
     if chart_analysis:
-        sections.append("## Chart Analysis (Quantitative)")
-        sections.append("```")
-        sections.append(chart_analysis)
-        sections.append("```")
-        sections.append("")
+        s.append("## Chart Analysis\n```")
+        s.append(str(chart_analysis))
+        s.append("```\n")
 
-    # ─── Robustness ───
-    sections.append("## Robustness Analysis")
-    if isinstance(robustness, dict):
-        score = robustness.get("overall_score", 0)
-        passed = robustness.get("tests_passed", 0)
-        total = robustness.get("total_tests", 7)
-        sections.append(f"**Overall Score**: {score:.1%} ({passed}/{total} tests passed)")
-        sections.append("")
+    # Robustness
+    s.append("## Robustness Analysis\n")
+    score = robustness.get("overall_score", 0)
+    passed = robustness.get("tests_passed", 0)
+    total = robustness.get("total_tests", 0)
+    s.append(f"**Score**: {score:.1%} ({passed}/{total} tests passed)\n")
+    details = robustness.get("details", {})
+    if details:
+        s.append("| Test | ✓ | Details |")
+        s.append("|------|---|---------|")
+        for tn, td in details.items():
+            if isinstance(td, dict):
+                ok = "✅" if td.get("passed") else "❌"
+                s.append(f"| {tn} | {ok} | {td.get('detail', '')} |")
+    s.append("")
 
-        details = robustness.get("details", {})
-        if details:
-            sections.append("| Test | Result | Details |")
-            sections.append("|------|--------|---------|")
-            for test_name, test_data in details.items():
-                if isinstance(test_data, dict):
-                    p_str = "✅" if test_data.get("passed", False) else "❌"
-                    detail = test_data.get("detail", test_data.get("message", ""))
-                    sections.append(f"| {test_name} | {p_str} | {detail} |")
-                else:
-                    sections.append(f"| {test_name} | — | {test_data} |")
-    sections.append("")
-
-    # ─── Multi-Asset Cross-Validation ───
-    if multi_asset:
-        sections.append("## Multi-Asset Cross-Validation")
-        sections.append("| Symbol | Sharpe | Return | Max DD | Trades |")
-        sections.append("|--------|--------|--------|--------|--------|")
-        for sym, data in multi_asset.items():
-            sections.append(
-                f"| {sym} | {_fv(data.get('sharpe'))} | "
-                f"{_fv(data.get('total_return'), '.2%')} | "
-                f"{_fv(data.get('max_drawdown'), '.2%')} | "
-                f"{data.get('total_trades', 0)} |"
-            )
-        sections.append("")
-
-    # ─── Hypothesis ───
-    sections.append("## Hypothesis")
+    # Hypothesis
+    s.append("## Hypothesis\n")
     if isinstance(hypothesis, dict):
-        sections.append(f"**Title**: {hypothesis.get('title', hypothesis.get('name', 'N/A'))}")
-        sections.append(f"**Thesis**: {hypothesis.get('thesis', hypothesis.get('description', 'N/A'))}")
-        sections.append(f"**Edge Source**: {hypothesis.get('edge', hypothesis.get('edge_source', 'N/A'))}")
-    elif isinstance(hypothesis, str):
-        sections.append(hypothesis)
-    sections.append("")
+        s.append(f"**Title**: {hypothesis.get('title', hypothesis.get('name', 'N/A'))}")
+        s.append(f"**Thesis**: {hypothesis.get('thesis', hypothesis.get('description', 'N/A'))}")
+    s.append("")
 
-    # ─── Agent Reviews ───
-    sections.append("## Agent Reviews")
-    if risk_review:
-        sections.append("### Risk Manager")
-        _add_review(sections, risk_review)
-    if stat_validation:
-        sections.append("### Statistician")
-        _add_review(sections, stat_validation)
-    if audit:
-        sections.append("### Auditor / Critic")
-        _add_review(sections, audit)
-    sections.append("")
+    # Agent Reviews
+    s.append("## Agent Reviews\n")
+    for label, review in [("Risk Manager", risk_review), ("Statistician", stat_validation), ("Auditor", audit)]:
+        if review:
+            s.append(f"### {label}")
+            v = review.get("verdict", review.get("recommendation", review.get("decision", "N/A")))
+            s.append(f"**Verdict**: {v}")
+            for k in ["summary", "analysis", "reasoning", "concerns", "key_findings"]:
+                val = review.get(k)
+                if val:
+                    if isinstance(val, list):
+                        for item in val:
+                            s.append(f"- {item}")
+                    else:
+                        s.append(str(val))
+            s.append("")
 
-    # ─── Decision Details ───
-    sections.append("## Final Decision")
-    if decision:
-        for key, label in [("key_risks", "Key Risks"), ("improvements_needed", "Improvements Needed"),
-                           ("edge_evidence", "Edge Evidence")]:
-            items = decision.get(key, [])
-            if items:
-                sections.append(f"**{label}:**")
-                for item in items:
-                    sections.append(f"- {item}")
-                sections.append("")
-        if decision.get("dissenting_view"):
-            sections.append("**Dissenting View:**")
-            sections.append(f"> {decision['dissenting_view']}")
-            sections.append("")
+    # Decision Details
+    s.append("## Final Decision\n")
+    for key, label in [("key_risks", "Key Risks"), ("improvements_needed", "Improvements"),
+                       ("edge_evidence", "Edge Evidence")]:
+        items = decision.get(key, [])
+        if items and isinstance(items, list):
+            s.append(f"**{label}:**")
+            for item in items:
+                s.append(f"- {item}")
+            s.append("")
+    dv = decision.get("dissenting_view")
+    if dv:
+        s.append(f"**Dissenting View:**\n> {dv}\n")
 
     # Write
-    report_text = "\n".join(sections)
+    report = "\n".join(s)
     filepath = output_path / f"{name}_report.md"
-    filepath.write_text(report_text, encoding="utf-8")
+    filepath.write_text(report, encoding="utf-8")
     logger.info(f"📄 Report saved: {filepath}")
-    return str(filepath)
+    return report
+
+
+def generate_experiment_report(state: dict) -> str:
+    """CLI-compatible wrapper. Merges experiment + agent_outputs."""
+    experiment = state.get("experiment", {})
+    if isinstance(experiment, str):
+        experiment = {"strategy_name": experiment}
+    agent_outputs = state.get("agent_outputs", {})
+    merged = {}
+    if isinstance(experiment, dict):
+        merged.update(experiment)
+    if isinstance(agent_outputs, dict):
+        merged.update(agent_outputs)
+    return generate_report(merged)
 
 
 # ─── Helpers ───
 
-def _oos(oos_data, key):
-    if oos_data and isinstance(oos_data, dict):
-        return oos_data.get(key)
-    return None
+def _dict(val):
+    """Ensure value is a dict, never None/str."""
+    if val is None:
+        return {}
+    if isinstance(val, str):
+        return {"value": val}
+    if isinstance(val, dict):
+        return val
+    return {}
 
-def _row(sections, label, is_val, oos_val, fmt=".3f"):
-    sections.append(f"| {label} | {_fv(is_val, fmt)} | {_fv(oos_val, fmt) if oos_val is not None else '—'} |")
 
-def _fv(val, fmt=".3f"):
+def _row(sections, label, is_val, oos_val=None, pct=False, fmt=".3f"):
+    sections.append(f"| {label} | {_fv(is_val, pct=pct, fmt=fmt)} | {_fv(oos_val, pct=pct, fmt=fmt) if oos_val is not None else '—'} |")
+
+
+def _fv(val, pct=False, fmt=".3f"):
     if val is None:
         return "N/A"
     try:
+        v = float(val)
+        if pct:
+            return f"{v:.2%}"
         if fmt == "d":
-            return str(int(val))
-        return f"{val:{fmt}}"
+            return str(int(v))
+        return f"{v:{fmt}}"
     except (ValueError, TypeError):
         return str(val)
-
-def _add_review(sections, review):
-    if isinstance(review, str):
-        sections.append(review)
-        return
-    verdict = review.get("verdict", review.get("recommendation", review.get("decision", "N/A")))
-    sections.append(f"**Verdict**: {verdict}")
-    for key in ["summary", "analysis", "reasoning", "key_findings", "concerns"]:
-        if key in review:
-            val = review[key]
-            if isinstance(val, list):
-                for item in val:
-                    sections.append(f"- {item}")
-            elif isinstance(val, str):
-                sections.append(val)
-    sections.append("")
-
-
-# Alias for CLI compatibility
-def generate_experiment_report(state: dict) -> str:
-    experiment = state.get("experiment", {})
-    agent_outputs = state.get("agent_outputs", {})
-    merged = {**experiment, **agent_outputs}
-    return generate_report(merged)

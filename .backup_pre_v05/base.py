@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -60,24 +59,13 @@ class BaseAgent(ABC):
             )
 
         logger.info(f"[{self.name}] Calling LLM ({self.model})...")
-        for _attempt in range(3):
-            try:
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=max_tokens,
-                    temperature=self.temperature,
-                    system=system,
-                    messages=[{"role": "user", "content": user_prompt}],
-                )
-                break
-            except Exception as _e:
-                if "overloaded" in str(_e).lower() or "529" in str(_e):
-                    if _attempt < 2:
-                        _wait = 2 ** (_attempt + 1)
-                        logger.warning(f"[{self.name}] API overloaded, retry {_attempt+1}/3 in {_wait}s...")
-                        time.sleep(_wait)
-                        continue
-                raise
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            temperature=self.temperature,
+            system=system,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
         text = response.content[0].text
         logger.debug(f"[{self.name}] Got {len(text)} chars, {response.usage.output_tokens} tokens")
         return text

@@ -171,7 +171,11 @@ def backtest_run_node(state: GraphState) -> GraphState:
         from src.backtesting.live_runner import LiveBacktestRunner
 
         runner = LiveBacktestRunner()
-        result = runner.run(state["agent_outputs"].get("quant_formalization", {}), state["agent_outputs"].get("backtest_design", {}), strategy_name=state["experiment"]["strategy_name"])
+        result = runner.run(
+            state["agent_outputs"].get("formalization", {}),
+            state["agent_outputs"].get("backtest_design", {}),
+            strategy_name=state["experiment"]["strategy_name"],
+        )
 
         if result.get("status") == "error":
             logger.warning(f"Backtest error: {result.get('error')}")
@@ -208,8 +212,11 @@ def risk_review_node(state: GraphState) -> GraphState:
 
     # v0.4: Inject chart analysis, benchmarks, walk-forward into agent context
 
-    _extra_context = _enrich_backtest_context(state.get("experiment", {}))
+    try:
+        _extra_context = _enrich_backtest_context(state.get("experiment", {}))
 
+    except Exception:
+        _extra_context = ""
     if _extra_context:
 
         if isinstance(experiment.get("backtest_result"), dict):
@@ -234,8 +241,11 @@ def validation_node(state: GraphState) -> GraphState:
 
     # v0.4: Inject chart analysis, benchmarks, walk-forward into agent context
 
-    _extra_context = _enrich_backtest_context(state.get("experiment", {}))
+    try:
+        _extra_context = _enrich_backtest_context(state.get("experiment", {}))
 
+    except Exception:
+        _extra_context = ""
     if _extra_context:
 
         if isinstance(experiment.get("backtest_result"), dict):
@@ -262,8 +272,11 @@ def audit_node(state: GraphState) -> GraphState:
 
     # v0.4: Inject chart analysis, benchmarks, walk-forward into agent context
 
-    _extra_context = _enrich_backtest_context(state.get("experiment", {}))
+    try:
+        _extra_context = _enrich_backtest_context(state.get("experiment", {}))
 
+    except Exception:
+        _extra_context = ""
     if _extra_context:
 
         if isinstance(experiment.get("backtest_result"), dict):
