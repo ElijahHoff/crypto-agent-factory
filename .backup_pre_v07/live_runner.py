@@ -1,10 +1,10 @@
 """
-Live Backtest Runner v0.7 — Iterative agent-generated signals.
+Live Backtest Runner v0.6 — Agent-Generated Signals with fallback.
 
-1. Analyze market context (bear/bull/sideways)
-2. Claude writes signal code adapted to market regime
-3. If Sharpe < 0 → Claude rewrites with feedback (up to 3 attempts)
-4. Best result goes through full backtest + robustness + charts
+Pipeline:
+1. Try to execute signal code from quant formalization agent
+2. If that fails → fall back to built-in signal generator (v0.5)
+3. Run backtest, robustness, benchmarks, walk-forward, charts
 """
 
 import json
@@ -15,7 +15,7 @@ from src.data import MarketDataFetcher
 from src.backtesting import BacktestEngine
 from src.backtesting.robustness import RobustnessTester
 from src.backtesting.signal_generator import SignalGenerator
-from src.backtesting.iterative_signals import generate_signals_iterative
+from src.backtesting.signal_sandbox import SignalSandbox, extract_signal_code
 from src.backtesting.benchmark import compute_benchmarks
 from src.backtesting.walk_forward import run_walk_forward
 
@@ -27,11 +27,14 @@ except ImportError:
 
 
 class LiveBacktestRunner:
+    """Full backtest pipeline with agent-generated signals."""
+
     def __init__(self):
         self.data_fetcher = MarketDataFetcher()
         self.backtest_engine = BacktestEngine()
         self.robustness_tester = RobustnessTester()
         self.signal_generator = SignalGenerator()
+        self.signal_sandbox = SignalSandbox()
 
     def run(self, quant_spec: dict, backtest_design: dict,
             strategy_name: str = "unknown") -> dict:
@@ -43,68 +46,64 @@ class LiveBacktestRunner:
             f"period={config['start']}→{config['end']}"
         )
 
-        # 1. Fetch data
+        # 1. Fetch OHLCV
         logger.info(f"Fetching OHLCV: {config['symbol']} {config['timeframe']}...")
         prices = self.data_fetcher.fetch_ohlcv_full(
-            symbol=config["symbol"], timeframe=config["timeframe"],
-            start=config["start"], end=config["end"],
+            symbol=config["symbol"],
+            timeframe=config["timeframe"],
+            start=config["start"],
+            end=config["end"],
         )
         if prices is None or len(prices) < 100:
-            return {"error": "insufficient_data", "bars": len(prices) if prices is not None else 0}
+            n = len(prices) if prices is not None else 0
+            logger.error(f"Insufficient data: {n} bars")
+            return {"error": "insufficient_data", "bars": n}
 
         logger.info(f"Got {len(prices)} bars: {prices.index[0]} → {prices.index[-1]}")
 
-        # 2. Generate signals — ITERATIVE with Claude
+        # 2. Generate signals — TRY AGENT CODE FIRST
         signal_source = "built_in"
         signals = None
-        iteration_log = {}
-        agent_code = ""
 
-        logger.info("🧠 Starting iterative signal generation (up to 3 attempts)...")
-        try:
-            signals, agent_code, iteration_log = generate_signals_iterative(
-                prices=prices,
-                strategy_name=strategy_name,
-                quant_spec=quant_spec if isinstance(quant_spec, dict) else {},
-                max_iterations=3,
-            )
+        agent_code = extract_signal_code(quant_spec)
+        if agent_code:
+            logger.info("🧠 Trying agent-generated signal code...")
+            signals = self.signal_sandbox.execute(agent_code, prices)
             if signals is not None:
-                signal_source = "agent_iterated"
-                logger.info(f"✅ Agent signals accepted after {iteration_log.get('total_attempts', 0)} iterations")
-        except Exception as e:
-            logger.warning(f"Iterative generation failed: {e}")
+                signal_source = "agent_generated"
+                logger.info("✅ Agent-generated signals accepted!")
+            else:
+                logger.warning("⚠️ Agent code failed — falling back to built-in signals")
 
-        # Fallback to built-in
         if signals is None:
-            logger.info(f"Using built-in signals: {config['strategy_type']}...")
+            logger.info(f"Generating built-in signals: {config['strategy_type']}...")
             signals = self.signal_generator.generate(
                 prices, strategy_type=config["strategy_type"],
                 params=config.get("signal_params", {}),
             )
-            signal_source = "built_in"
 
-        # 3. Full backtest
+        # 3. Backtest
         logger.info("Running backtest with realistic costs...")
         bt_result = self.backtest_engine.run_backtest(prices, signals)
 
         # 4. Robustness
-        logger.info("Running robustness suite...")
-        rob_report = None
+        logger.info("Running robustness suite (7 tests)...")
         try:
             rob_report = self.robustness_tester.run_full_suite(prices, signals, bt_result)
         except Exception as e:
             logger.warning(f"Robustness failed: {e}")
+            rob_report = None
 
         # 5. Benchmarks
         logger.info("Computing benchmarks...")
-        benchmarks = {}
         try:
             benchmarks = compute_benchmarks(prices)
         except Exception as e:
             logger.warning(f"Benchmarks failed: {e}")
+            benchmarks = {}
 
         # 6. Walk-forward
-        logger.info("Running walk-forward...")
+        logger.info("Running walk-forward validation (8 periods)...")
         wf_result = None
         try:
             wf_result = run_walk_forward(prices, signals, self.backtest_engine, n_periods=8)
@@ -113,8 +112,9 @@ class LiveBacktestRunner:
 
         # 7. Charts
         charts = {}
-        chart_desc = ""
+        chart_description = ""
         if HAS_CHARTS:
+            logger.info("Generating report charts...")
             try:
                 charts = generate_report_charts(
                     prices=prices, signals=signals,
@@ -124,11 +124,13 @@ class LiveBacktestRunner:
             except Exception as e:
                 logger.warning(f"Charts failed: {e}")
             try:
-                chart_desc = generate_chart_description(bt_result, benchmarks, wf_result, signals)
+                chart_description = generate_chart_description(
+                    bt_result, benchmarks, wf_result, signals
+                )
             except Exception as e:
-                logger.warning(f"Chart desc failed: {e}")
+                logger.warning(f"Chart description failed: {e}")
 
-        # 8. Log
+        # 8. Package
         is_m = bt_result.get("in_sample")
         oos_m = bt_result.get("out_of_sample")
         is_sharpe = _safe(is_m, "sharpe", 0)
@@ -139,15 +141,15 @@ class LiveBacktestRunner:
         wf_cons = wf_result.consistency_ratio if wf_result else 0
 
         logger.info(
-            f"Backtest [{signal_source}]: IS Sharpe={is_sharpe:.3f}, "
-            f"OOS={oos_sharpe:.3f}, Trades={is_trades}, Rob={rob_score:.1%}, "
-            f"B&H={bh_sharpe:.3f}, WF={wf_cons:.0%}"
+            f"Backtest complete [{signal_source}]: IS Sharpe={is_sharpe:.3f}, "
+            f"OOS Sharpe={oos_sharpe:.3f}, Trades={is_trades}, "
+            f"Robustness={rob_score:.1%}, B&H Sharpe={bh_sharpe:.3f}, "
+            f"WF Consistency={wf_cons:.0%}"
         )
 
         result = self._package(
             bt_result, rob_report, config, prices, signals,
-            benchmarks, wf_result, chart_desc, signal_source,
-            agent_code, iteration_log,
+            benchmarks, wf_result, chart_description, signal_source, agent_code,
         )
         result["charts"] = charts
         return result
@@ -155,47 +157,70 @@ class LiveBacktestRunner:
     def _extract_config(self, quant_spec, backtest_design, strategy_name):
         symbol = "BTC/USDT"
         for spec in [backtest_design, quant_spec]:
-            if not isinstance(spec, dict): continue
-            for k in ["symbol", "instrument", "pair"]:
-                if k in spec: symbol = spec[k]; break
+            if not isinstance(spec, dict):
+                continue
+            for key in ["symbol", "instrument", "pair", "ticker"]:
+                if key in spec:
+                    symbol = spec[key]
+                    break
 
         timeframe = "1h"
         if isinstance(backtest_design, dict):
-            for k in ["timeframe", "interval"]:
-                if k in backtest_design: timeframe = backtest_design[k]; break
+            for key in ["timeframe", "interval", "bar_size", "frequency"]:
+                if key in backtest_design:
+                    timeframe = backtest_design[key]
+                    break
 
         strategy_type = self.signal_generator.classify_strategy(
             strategy_name,
             json.dumps(quant_spec, default=str) if isinstance(quant_spec, dict) else "",
         )
+        if isinstance(backtest_design, dict):
+            for key in ["strategy_type", "signal_type", "type"]:
+                if key in backtest_design:
+                    candidate = str(backtest_design[key]).lower()
+                    if candidate in SignalGenerator.STRATEGY_MAP:
+                        strategy_type = candidate
+                        break
 
         signal_params = {}
         if isinstance(quant_spec, dict):
             params = quant_spec.get("parameters", quant_spec.get("params", {}))
-            if isinstance(params, dict): signal_params = params
+            if isinstance(params, dict):
+                signal_params = params
+            elif isinstance(params, list):
+                for p in params:
+                    if isinstance(p, dict) and "name" in p:
+                        signal_params[p["name"]] = p.get("default", p.get("value", 0))
 
         end = datetime.now(timezone.utc)
         lookback = 365
         if isinstance(backtest_design, dict):
-            for k in ["lookback_days", "history_days"]:
-                if k in backtest_design:
-                    try: lookback = int(backtest_design[k])
-                    except: pass
+            for key in ["lookback_days", "history_days", "data_period_days"]:
+                if key in backtest_design:
+                    try:
+                        lookback = int(backtest_design[key])
+                    except (ValueError, TypeError):
+                        pass
                     break
 
-        return {"symbol": symbol, "timeframe": timeframe, "strategy_type": strategy_type,
-                "signal_params": signal_params,
-                "start": end - timedelta(days=lookback), "end": end}
+        return {
+            "symbol": symbol, "timeframe": timeframe,
+            "strategy_type": strategy_type,
+            "signal_params": signal_params,
+            "start": end - timedelta(days=lookback), "end": end,
+        }
 
     def _package(self, bt_result, rob_report, config, prices, signals,
-                 benchmarks, wf_result, chart_desc, signal_source,
-                 agent_code, iteration_log) -> dict:
+                 benchmarks, wf_result, chart_description,
+                 signal_source, agent_code) -> dict:
         is_r = bt_result.get("in_sample")
         oos_r = bt_result.get("out_of_sample")
 
         summary = {
             "config": {
-                "symbol": config["symbol"], "timeframe": config["timeframe"],
+                "symbol": config["symbol"],
+                "timeframe": config["timeframe"],
                 "strategy_type": config["strategy_type"],
                 "signal_source": signal_source,
                 "bars": len(prices),
@@ -221,7 +246,6 @@ class LiveBacktestRunner:
                 "transitions": int((signals != signals.shift(1)).sum()),
                 "source": signal_source,
             },
-            "iteration_log": iteration_log,
         }
 
         if oos_r:
@@ -234,52 +258,70 @@ class LiveBacktestRunner:
 
         if benchmarks:
             summary["benchmarks"] = {
-                n: {"total_return": round(b.total_return, 4), "sharpe": round(b.sharpe, 3),
-                    "max_drawdown": round(b.max_drawdown, 4)}
-                for n, b in benchmarks.items()
+                name: {"total_return": round(bm.total_return, 4),
+                       "sharpe": round(bm.sharpe, 3),
+                       "max_drawdown": round(bm.max_drawdown, 4)}
+                for name, bm in benchmarks.items()
             }
 
         if wf_result:
             summary["walk_forward"] = {
                 "n_periods": wf_result.n_periods,
                 "positive_periods": wf_result.positive_periods,
+                "negative_periods": wf_result.negative_periods,
                 "consistency_ratio": round(wf_result.consistency_ratio, 3),
                 "avg_sharpe": round(wf_result.avg_sharpe, 3),
                 "sharpe_std": round(wf_result.sharpe_std, 3),
+                "worst_period": wf_result.worst_period,
+                "best_period": wf_result.best_period,
                 "subperiods": [
                     {"period": p.period_num, "dates": f"{p.start_date}→{p.end_date}",
                      "sharpe": p.sharpe, "return": p.total_return,
-                     "trades": p.total_trades, "passed": p.passed}
+                     "max_dd": p.max_drawdown, "trades": p.total_trades,
+                     "passed": p.passed}
                     for p in wf_result.periods
                 ],
             }
 
-        if chart_desc:
-            summary["chart_analysis"] = chart_desc
-        if agent_code:
-            summary["agent_signal_code"] = agent_code[:3000]
+        if chart_description:
+            summary["chart_analysis"] = chart_description
+
+        # Include agent code snippet for review agents
+        if agent_code and signal_source == "agent_generated":
+            summary["agent_signal_code"] = agent_code[:2000]
 
         return summary
 
 
 def _safe(obj, field, default=None):
-    if obj is None: return default
-    v = getattr(obj, field, default)
-    try: return round(float(v), 4) if v is not None else default
-    except: return v
+    if obj is None:
+        return default
+    val = getattr(obj, field, default)
+    if val is None:
+        return default
+    try:
+        return round(float(val), 4)
+    except (ValueError, TypeError):
+        return val
 
 def _safe_pct(obj, field, default=None):
-    if obj is None: return default
-    v = getattr(obj, field, None)
-    try: return round(float(v) / 100, 4) if v is not None else default
-    except: return default
+    if obj is None:
+        return default
+    val = getattr(obj, field, None)
+    if val is None:
+        return default
+    try:
+        return round(float(val) / 100, 4)
+    except (ValueError, TypeError):
+        return default
 
-def _pack_rob(r):
-    if r is None: return {"overall_score": 0, "tests_passed": 0, "total_tests": 0, "details": {}}
+def _pack_rob(rob_report):
+    if rob_report is None:
+        return {"overall_score": 0, "tests_passed": 0, "total_tests": 0, "details": {}}
     return {
-        "overall_score": round(r.overall_score, 3),
-        "tests_passed": sum(1 for c in r.checks if c.passed),
-        "total_tests": len(r.checks),
-        "details": {c.name: {"passed": c.passed, "detail": c.details} for c in r.checks},
-        "critical_failures": r.critical_failures,
+        "overall_score": round(rob_report.overall_score, 3),
+        "tests_passed": sum(1 for c in rob_report.checks if c.passed),
+        "total_tests": len(rob_report.checks),
+        "details": {c.name: {"passed": c.passed, "detail": c.details} for c in rob_report.checks},
+        "critical_failures": rob_report.critical_failures,
     }

@@ -10,6 +10,11 @@ from langgraph.graph import END, StateGraph
 from loguru import logger
 
 from src.agents import get_agent
+try:
+    from src.backtesting.signal_code_prompt import patch_quant_agent
+    patch_quant_agent()
+except Exception:
+    pass  # v0.6 signal code prompt not critical
 from src.models import (
     Decision,
     ExperimentRecord,
