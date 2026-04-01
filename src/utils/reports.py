@@ -147,6 +147,49 @@ def generate_report(experiment: dict, output_dir: str = "experiments") -> str:
     s.append("")
 
     # Hypothesis
+
+    # ─── Multi-Asset Portfolio ───
+    multi = _dict(backtest.get("multi_asset"))
+    if multi and multi.get("portfolios"):
+        s.append("## Multi-Asset Portfolio\n")
+        s.append(f"**Universe**: {', '.join(multi.get('universe', []))} ({multi.get('n_assets', 0)} assets)")
+        s.append(f"**Lookback**: {multi.get('lookback_days', 0)} days\n")
+
+        # Per-asset results
+        ar = multi.get("asset_results", {})
+        if ar:
+            s.append("### Per-Asset Results\n")
+            s.append("| Asset | Sharpe | Return | Max DD | Trades |")
+            s.append("|-------|--------|--------|--------|--------|")
+            for sym, data in ar.items():
+                s.append(f"| {sym} | {_fv(data.get('sharpe'))} | "
+                         f"{_fv(data.get('total_return'), pct=True)} | "
+                         f"{_fv(data.get('max_drawdown'), pct=True)} | "
+                         f"{data.get('n_trades', 0)} |")
+            s.append("")
+
+        # Portfolio methods
+        ports = multi.get("portfolios", {})
+        if ports:
+            s.append("### Portfolio Methods\n")
+            s.append("| Method | Sharpe | Return | Max DD | CAGR | Calmar |")
+            s.append("|--------|--------|--------|--------|------|--------|")
+            for method, data in ports.items():
+                s.append(f"| {method.replace('_', ' ').title()} | "
+                         f"{_fv(data.get('sharpe'))} | "
+                         f"{_fv(data.get('total_return'), pct=True)} | "
+                         f"{_fv(data.get('max_drawdown'), pct=True)} | "
+                         f"{_fv(data.get('cagr'), pct=True)} | "
+                         f"{_fv(data.get('calmar'))} |")
+            s.append("")
+
+        # Best portfolio
+        best = multi.get("best_portfolio", {})
+        if best:
+            s.append(f"**Best**: {best.get('method', '?').replace('_', ' ').title()} "
+                     f"(Sharpe={best.get('sharpe', 0):.3f}, Return={best.get('total_return', 0):.2%})")
+            s.append("")
+
     s.append("## Hypothesis\n")
     if isinstance(hypothesis, dict):
         s.append(f"**Title**: {hypothesis.get('title', hypothesis.get('name', 'N/A'))}")

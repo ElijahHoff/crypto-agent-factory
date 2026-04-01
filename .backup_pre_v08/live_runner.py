@@ -1,10 +1,10 @@
 """
-Live Backtest Runner v0.8 — Multi-asset portfolio with iterative signals.
+Live Backtest Runner v0.7 — Iterative agent-generated signals.
 
-New: After single-asset backtest, runs same strategy across BTC/ETH/SOL/BNB
-and builds equal-weight, inverse-vol, and momentum-weighted portfolios.
-
-Uses 2 years of data instead of 1.
+1. Analyze market context (bear/bull/sideways)
+2. Claude writes signal code adapted to market regime
+3. If Sharpe < 0 → Claude rewrites with feedback (up to 3 attempts)
+4. Best result goes through full backtest + robustness + charts
 """
 
 import json
@@ -15,32 +15,15 @@ from src.data import MarketDataFetcher
 from src.backtesting import BacktestEngine
 from src.backtesting.robustness import RobustnessTester
 from src.backtesting.signal_generator import SignalGenerator
+from src.backtesting.iterative_signals import generate_signals_iterative
 from src.backtesting.benchmark import compute_benchmarks
 from src.backtesting.walk_forward import run_walk_forward
-
-try:
-    from src.backtesting.iterative_signals import generate_signals_iterative
-    HAS_ITERATIVE = True
-except ImportError:
-    HAS_ITERATIVE = False
-
-try:
-    from src.backtesting.multi_asset import run_multi_asset
-    HAS_MULTI = True
-except ImportError:
-    HAS_MULTI = False
 
 try:
     from src.backtesting.charts import generate_report_charts, generate_chart_description
     HAS_CHARTS = True
 except ImportError:
     HAS_CHARTS = False
-
-try:
-    from src.backtesting.portfolio_charts import generate_portfolio_charts
-    HAS_PORT_CHARTS = True
-except ImportError:
-    HAS_PORT_CHARTS = False
 
 
 class LiveBacktestRunner:
@@ -56,10 +39,11 @@ class LiveBacktestRunner:
 
         logger.info(
             f"Config: symbol={config['symbol']}, tf={config['timeframe']}, "
-            f"type={config['strategy_type']}, lookback={config['lookback_days']}d"
+            f"type={config['strategy_type']}, "
+            f"period={config['start']}→{config['end']}"
         )
 
-        # 1. Fetch data (2 years default)
+        # 1. Fetch data
         logger.info(f"Fetching OHLCV: {config['symbol']} {config['timeframe']}...")
         prices = self.data_fetcher.fetch_ohlcv_full(
             symbol=config["symbol"], timeframe=config["timeframe"],
@@ -70,74 +54,64 @@ class LiveBacktestRunner:
 
         logger.info(f"Got {len(prices)} bars: {prices.index[0]} → {prices.index[-1]}")
 
-        # 2. Iterative signal generation
+        # 2. Generate signals — ITERATIVE with Claude
         signal_source = "built_in"
         signals = None
         iteration_log = {}
         agent_code = ""
 
-        if HAS_ITERATIVE:
-            logger.info("🧠 Iterative signal generation (up to 5 attempts)...")
-            try:
-                signals, agent_code, iteration_log = generate_signals_iterative(
-                    prices, strategy_name,
-                    quant_spec if isinstance(quant_spec, dict) else {},
-                    max_iterations=5,
-                )
-                if signals is not None:
-                    signal_source = "agent_iterated"
-                    logger.info(f"✅ Agent signals after {iteration_log.get('total_attempts', 0)} iterations")
-            except Exception as e:
-                logger.warning(f"Iterative failed: {e}")
+        logger.info("🧠 Starting iterative signal generation (up to 3 attempts)...")
+        try:
+            signals, agent_code, iteration_log = generate_signals_iterative(
+                prices=prices,
+                strategy_name=strategy_name,
+                quant_spec=quant_spec if isinstance(quant_spec, dict) else {},
+                max_iterations=3,
+            )
+            if signals is not None:
+                signal_source = "agent_iterated"
+                logger.info(f"✅ Agent signals accepted after {iteration_log.get('total_attempts', 0)} iterations")
+        except Exception as e:
+            logger.warning(f"Iterative generation failed: {e}")
 
+        # Fallback to built-in
         if signals is None:
-            logger.info(f"Built-in signals: {config['strategy_type']}...")
+            logger.info(f"Using built-in signals: {config['strategy_type']}...")
             signals = self.signal_generator.generate(
                 prices, strategy_type=config["strategy_type"],
                 params=config.get("signal_params", {}),
             )
+            signal_source = "built_in"
 
         # 3. Full backtest
-        logger.info("Running backtest...")
+        logger.info("Running backtest with realistic costs...")
         bt_result = self.backtest_engine.run_backtest(prices, signals)
 
         # 4. Robustness
+        logger.info("Running robustness suite...")
         rob_report = None
         try:
-            logger.info("Robustness suite...")
             rob_report = self.robustness_tester.run_full_suite(prices, signals, bt_result)
         except Exception as e:
-            logger.warning(f"Robustness: {e}")
+            logger.warning(f"Robustness failed: {e}")
 
         # 5. Benchmarks
+        logger.info("Computing benchmarks...")
         benchmarks = {}
         try:
             benchmarks = compute_benchmarks(prices)
         except Exception as e:
-            logger.warning(f"Benchmarks: {e}")
+            logger.warning(f"Benchmarks failed: {e}")
 
         # 6. Walk-forward
+        logger.info("Running walk-forward...")
         wf_result = None
         try:
             wf_result = run_walk_forward(prices, signals, self.backtest_engine, n_periods=8)
         except Exception as e:
-            logger.warning(f"Walk-forward: {e}")
+            logger.warning(f"Walk-forward failed: {e}")
 
-        # 7. Multi-asset portfolio
-        multi_result = {}
-        if HAS_MULTI:
-            logger.info("🌐 Running multi-asset portfolio...")
-            try:
-                multi_result = run_multi_asset(
-                    strategy_name=strategy_name,
-                    quant_spec=quant_spec if isinstance(quant_spec, dict) else {},
-                    backtest_design=backtest_design if isinstance(backtest_design, dict) else {},
-                    lookback_days=config["lookback_days"],
-                )
-            except Exception as e:
-                logger.warning(f"Multi-asset: {e}")
-
-        # 8. Charts
+        # 7. Charts
         charts = {}
         chart_desc = ""
         if HAS_CHARTS:
@@ -148,44 +122,32 @@ class LiveBacktestRunner:
                     benchmarks=benchmarks, walk_forward=wf_result,
                 )
             except Exception as e:
-                logger.warning(f"Charts: {e}")
+                logger.warning(f"Charts failed: {e}")
             try:
                 chart_desc = generate_chart_description(bt_result, benchmarks, wf_result, signals)
             except Exception as e:
-                pass
+                logger.warning(f"Chart desc failed: {e}")
 
-        # Portfolio charts
-        if HAS_PORT_CHARTS and multi_result and "portfolios" in multi_result:
-            try:
-                port_charts = generate_portfolio_charts(multi_result, strategy_name)
-                charts.update(port_charts)
-            except Exception as e:
-                logger.warning(f"Portfolio charts: {e}")
-
-        # 9. Summary
+        # 8. Log
         is_m = bt_result.get("in_sample")
         oos_m = bt_result.get("out_of_sample")
         is_sharpe = _safe(is_m, "sharpe", 0)
+        is_trades = _safe(is_m, "total_trades", 0)
         oos_sharpe = _safe(oos_m, "sharpe", 0)
         rob_score = rob_report.overall_score if rob_report else 0
         bh_sharpe = benchmarks.get("buy_and_hold").sharpe if benchmarks.get("buy_and_hold") else 0
         wf_cons = wf_result.consistency_ratio if wf_result else 0
-        best_port = multi_result.get("best_portfolio", {})
 
         logger.info(
-            f"Backtest [{signal_source}]: IS={is_sharpe:.3f}, OOS={oos_sharpe:.3f}, "
-            f"Rob={rob_score:.1%}, B&H={bh_sharpe:.3f}, WF={wf_cons:.0%}"
+            f"Backtest [{signal_source}]: IS Sharpe={is_sharpe:.3f}, "
+            f"OOS={oos_sharpe:.3f}, Trades={is_trades}, Rob={rob_score:.1%}, "
+            f"B&H={bh_sharpe:.3f}, WF={wf_cons:.0%}"
         )
-        if best_port:
-            logger.info(
-                f"🏆 Best portfolio: {best_port.get('method', '?')} "
-                f"Sharpe={best_port.get('sharpe', 0):.3f}"
-            )
 
         result = self._package(
             bt_result, rob_report, config, prices, signals,
             benchmarks, wf_result, chart_desc, signal_source,
-            agent_code, iteration_log, multi_result,
+            agent_code, iteration_log,
         )
         result["charts"] = charts
         return result
@@ -213,8 +175,7 @@ class LiveBacktestRunner:
             if isinstance(params, dict): signal_params = params
 
         end = datetime.now(timezone.utc)
-        # v0.8: Default 2 years instead of 1
-        lookback = 730
+        lookback = 365
         if isinstance(backtest_design, dict):
             for k in ["lookback_days", "history_days"]:
                 if k in backtest_design:
@@ -223,12 +184,12 @@ class LiveBacktestRunner:
                     break
 
         return {"symbol": symbol, "timeframe": timeframe, "strategy_type": strategy_type,
-                "signal_params": signal_params, "lookback_days": lookback,
+                "signal_params": signal_params,
                 "start": end - timedelta(days=lookback), "end": end}
 
     def _package(self, bt_result, rob_report, config, prices, signals,
                  benchmarks, wf_result, chart_desc, signal_source,
-                 agent_code, iteration_log, multi_result) -> dict:
+                 agent_code, iteration_log) -> dict:
         is_r = bt_result.get("in_sample")
         oos_r = bt_result.get("out_of_sample")
 
@@ -237,7 +198,6 @@ class LiveBacktestRunner:
                 "symbol": config["symbol"], "timeframe": config["timeframe"],
                 "strategy_type": config["strategy_type"],
                 "signal_source": signal_source,
-                "lookback_days": config["lookback_days"],
                 "bars": len(prices),
                 "period": f"{prices.index[0]} → {prices.index[-1]}",
             },
@@ -258,6 +218,7 @@ class LiveBacktestRunner:
                 "long_bars": int((signals == 1).sum()),
                 "short_bars": int((signals == -1).sum()),
                 "flat_bars": int((signals == 0).sum()),
+                "transitions": int((signals != signals.shift(1)).sum()),
                 "source": signal_source,
             },
             "iteration_log": iteration_log,
@@ -284,15 +245,14 @@ class LiveBacktestRunner:
                 "positive_periods": wf_result.positive_periods,
                 "consistency_ratio": round(wf_result.consistency_ratio, 3),
                 "avg_sharpe": round(wf_result.avg_sharpe, 3),
+                "sharpe_std": round(wf_result.sharpe_std, 3),
                 "subperiods": [
                     {"period": p.period_num, "dates": f"{p.start_date}→{p.end_date}",
-                     "sharpe": p.sharpe, "passed": p.passed}
+                     "sharpe": p.sharpe, "return": p.total_return,
+                     "trades": p.total_trades, "passed": p.passed}
                     for p in wf_result.periods
                 ],
             }
-
-        if multi_result and "portfolios" in multi_result:
-            summary["multi_asset"] = multi_result
 
         if chart_desc:
             summary["chart_analysis"] = chart_desc
