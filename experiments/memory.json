@@ -1,0 +1,62 @@
+[
+  {
+    "timestamp": "2026-04-03T17:31:41.541289",
+    "strategy_name": "adaptive_momentum",
+    "strategy_type": "momentum",
+    "sharpe": -4.072,
+    "total_return": -0.71,
+    "n_trades": 267,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "extreme negative Sharpe",
+    "code_snippet": "def generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters\n    fast_momentum_period = 8\n    medium_momentum_period = 24\n    slow_momentum_period = 72\n    volatility_lookback = 48\n    volume_sma_period = 20\n    atr_period = 14\n    \n    # Adaptive t"
+  },
+  {
+    "timestamp": "2026-04-03T17:38:42.332974",
+    "strategy_name": "ema_trend_filter",
+    "strategy_type": "volatility",
+    "sharpe": -1.351,
+    "total_return": -0.0789,
+    "n_trades": 16,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "too few trades",
+    "code_snippet": "# Swept params: {'fast_ema_period': 16.0, 'ema_slope_threshold': 0.0005, 'medium_ema_period': 14, 'slow_ema_period': 66}\ndef generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters\n    fast_ema_period = 8\n    medium_ema_period = 21\n    slow_ema_per"
+  },
+  {
+    "timestamp": "2026-04-03T17:48:02.268599",
+    "strategy_name": "breakout_atr_stop",
+    "strategy_type": "volatility",
+    "sharpe": -1.485,
+    "total_return": -0.0983,
+    "n_trades": 36,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "poor walk-forward consistency",
+    "code_snippet": "# Swept params: {'volume_threshold': 2.4, 'short_breakout_period': 7, 'medium_breakout_period': 14, 'long_breakout_period': 53}\ndef generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # CONFIGURABLE PARAMETERS\n    short_breakout_period = 10\n    medium_breakout_period = "
+  },
+  {
+    "timestamp": "2026-04-03T17:57:47.967404",
+    "strategy_name": "rsi_volume_divergence",
+    "strategy_type": "mean_reversion",
+    "sharpe": -2.907,
+    "total_return": -0.7628,
+    "n_trades": 431,
+    "signal_source": "built_in",
+    "decision": "negative",
+    "key_failure": "poor walk-forward consistency",
+    "code_snippet": ""
+  },
+  {
+    "timestamp": "2026-04-03T18:29:40.849094",
+    "strategy_name": "multi_roc_momentum",
+    "strategy_type": "momentum",
+    "sharpe": 0.675,
+    "total_return": 0.0299,
+    "n_trades": 2,
+    "signal_source": "agent_iterated",
+    "decision": "positive",
+    "key_failure": "too few trades",
+    "code_snippet": "def generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters for contrarian multi-ROC\n    short_roc_period = 6  # Short-term ROC (6 periods)\n    medium_roc_period = 24  # Medium-term ROC (24 periods)\n    long_roc_period = 72   # Long-term ROC (72 pe"
+  }
+]
