@@ -58,5 +58,17 @@
     "decision": "positive",
     "key_failure": "too few trades",
     "code_snippet": "def generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters for contrarian multi-ROC\n    short_roc_period = 6  # Short-term ROC (6 periods)\n    medium_roc_period = 24  # Medium-term ROC (24 periods)\n    long_roc_period = 72   # Long-term ROC (72 pe"
+  },
+  {
+    "timestamp": "2026-04-03T20:10:41.236202",
+    "strategy_name": "multi_roc_momentum_v2",
+    "strategy_type": "momentum",
+    "sharpe": -6.855,
+    "total_return": -0.7576,
+    "n_trades": 431,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "extreme negative Sharpe",
+    "code_snippet": "def generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters - loosened for more trades\n    roc_short_period = 6   # 6 bars (24h)\n    roc_medium_period = 24  # 24 bars (4 days) \n    roc_long_period = 168   # 168 bars (4 weeks)\n    \n    momentum_thre"
   }
 ]
