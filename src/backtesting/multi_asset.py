@@ -228,6 +228,7 @@ def run_multi_asset(
                 "sharpe": r.sharpe, "total_return": r.total_return,
                 "max_drawdown": r.max_drawdown, "n_trades": r.n_trades,
                 "n_long": r.n_long, "n_short": r.n_short,
+                "equity": r.equity,
             }
             for s, r in asset_results.items()
         },

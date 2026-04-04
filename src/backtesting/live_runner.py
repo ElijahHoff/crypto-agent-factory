@@ -211,6 +211,15 @@ class LiveBacktestRunner:
             agent_code, iteration_log, multi_result, trend_context,
         )
         result["charts"] = charts
+        # Strip large arrays before passing to review agents (token limit)
+        if "multi_asset" in result:
+            ma = result["multi_asset"]
+            for sym in ma.get("asset_results", {}):
+                ma["asset_results"][sym].pop("equity", None)
+                ma["asset_results"][sym].pop("returns", None)
+            for method in ma.get("portfolios", {}):
+                if isinstance(ma["portfolios"][method], dict):
+                    ma["portfolios"][method].pop("equity", None)
         return result
 
     def _extract_config(self, quant_spec, backtest_design, strategy_name):
