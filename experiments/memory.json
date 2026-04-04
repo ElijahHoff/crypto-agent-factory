@@ -70,5 +70,29 @@
     "decision": "negative",
     "key_failure": "extreme negative Sharpe",
     "code_snippet": "def generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters - loosened for more trades\n    roc_short_period = 6   # 6 bars (24h)\n    roc_medium_period = 24  # 24 bars (4 days) \n    roc_long_period = 168   # 168 bars (4 weeks)\n    \n    momentum_thre"
+  },
+  {
+    "timestamp": "2026-04-03T23:29:42.312473",
+    "strategy_name": "ema_adx_filter",
+    "strategy_type": "volatility",
+    "sharpe": -4.703,
+    "total_return": -0.4582,
+    "n_trades": 166,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "extreme negative Sharpe",
+    "code_snippet": "def generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters - shorter periods for more trades\n    fast_ema_period = 8\n    slow_ema_period = 21\n    adx_period = 14\n    adx_trend_threshold = 20  # Lower threshold for more signals\n    volume_ma_period"
+  },
+  {
+    "timestamp": "2026-04-03T23:38:49.006945",
+    "strategy_name": "donchian_breakout",
+    "strategy_type": "breakout",
+    "sharpe": -2.093,
+    "total_return": -0.2835,
+    "n_trades": 130,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "",
+    "code_snippet": "# Swept params: {'vol_threshold': 0.6, 'volume_threshold': 2.4, 'entry_period': 26, 'exit_period': 7}\ndef generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters\n    entry_period = 20  # Donchian channel period for entries\n    exit_period = 10   # "
   }
 ]
