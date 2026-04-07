@@ -130,5 +130,101 @@
     "decision": "negative",
     "key_failure": "extreme negative Sharpe",
     "code_snippet": "def generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    close = prices[\"close\"]\n    volume = prices[\"volume\"]\n    high = prices[\"high\"]\n    low = prices[\"low\"]\n    \n    # Configurable parameters\n    short_period = 8\n    medium_period = 21\n    long_period = 50\n    roc_sh"
+  },
+  {
+    "timestamp": "2026-04-07T18:26:48.373737",
+    "strategy_name": "ema_adx_trend",
+    "strategy_type": "trend_following",
+    "sharpe": -1.339,
+    "total_return": -0.1004,
+    "n_trades": 48,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "",
+    "code_snippet": "# Swept params: {'fast_ema': 8, 'slow_ema': 34, 'adx_period': 18, 'adx_threshold': 26}\ndef generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    close = prices[\"close\"]\n    high = prices[\"high\"]\n    low = prices[\"low\"]\n    volume = prices[\"volume\"]\n    \n    # Configurable"
+  },
+  {
+    "timestamp": "2026-04-07T18:33:23.018606",
+    "strategy_name": "roc_volume_filter",
+    "strategy_type": "momentum",
+    "sharpe": 0.144,
+    "total_return": 0.0057,
+    "n_trades": 11,
+    "signal_source": "agent_iterated",
+    "decision": "positive",
+    "key_failure": "too few trades",
+    "code_snippet": "# Swept params: {'volume_threshold': 3.0, 'roc_sell_threshold': 0.0075, 'roc_period': 16, 'volume_ma_period': 64}\ndef generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    close = prices[\"close\"]\n    volume = prices[\"volume\"]\n    high = prices[\"high\"]\n    low = prices[\"lo"
+  },
+  {
+    "timestamp": "2026-04-07T18:38:55.374917",
+    "strategy_name": "bollinger_breakout",
+    "strategy_type": "mean_reversion",
+    "sharpe": 0.627,
+    "total_return": 0.0431,
+    "n_trades": 5,
+    "signal_source": "agent_iterated",
+    "decision": "positive",
+    "key_failure": "too few trades",
+    "code_snippet": "# Swept params: {'bb_period': 14, 'volume_ma_period': 20, 'volume_threshold': 2.25, 'squeeze_threshold': 0.05}\ndef generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    close = prices[\"close\"]\n    volume = prices[\"volume\"]\n    \n    # Configurable parameters\n    bb_period "
+  },
+  {
+    "timestamp": "2026-04-07T18:45:34.545358",
+    "strategy_name": "donchian_channel",
+    "strategy_type": "breakout",
+    "sharpe": 0.233,
+    "total_return": 0.0383,
+    "n_trades": 71,
+    "signal_source": "agent_iterated",
+    "decision": "positive",
+    "key_failure": "",
+    "code_snippet": "def generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    # Configurable parameters\n    donchian_period = 20\n    atr_period = 14\n    atr_multiplier = 1.5\n    volume_ma_period = 20\n    volume_threshold = 1.2\n    rsi_period = 14\n    rsi_oversold = 35\n    rsi_overbought = 65"
+  },
+  {
+    "timestamp": "2026-04-07T18:55:38.250739",
+    "strategy_name": "macd_divergence",
+    "strategy_type": "volatility",
+    "sharpe": -0.81,
+    "total_return": -0.0473,
+    "n_trades": 16,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "too few trades",
+    "code_snippet": "# Swept params: {'rsi_period': 10, 'divergence_lookback': 14, 'volume_ma_period': 26, 'volume_threshold': 1.2}\ndef generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    # Configurable parameters\n    macd_fast = 12\n    macd_slow = 26\n    macd_signal = 9\n    rsi_period = 14"
+  },
+  {
+    "timestamp": "2026-04-07T19:12:28.456312",
+    "strategy_name": "rsi_mean_revert",
+    "strategy_type": "volatility",
+    "sharpe": -1.299,
+    "total_return": -0.3088,
+    "n_trades": 69,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "poor walk-forward consistency",
+    "code_snippet": "# Swept params: {'rsi_period': 18, 'volume_ma_period': 26, 'volume_threshold': 2.25, 'atr_period': 14}\ndef generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters\n    rsi_period = 14\n    rsi_oversold = 30\n    rsi_overbought = 70\n    volume_ma_perio"
+  },
+  {
+    "timestamp": "2026-04-07T19:19:31.425418",
+    "strategy_name": "obv_momentum",
+    "strategy_type": "mean_reversion",
+    "sharpe": -0.114,
+    "total_return": -0.0142,
+    "n_trades": 5,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "too few trades",
+    "code_snippet": "# Swept params: {'momentum_threshold': 0.015, 'volume_ma_period': 10, 'volume_threshold': 2.25, 'price_ma_period': 14}\ndef generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    # Configurable parameters\n    obv_ma_fast = 8\n    obv_ma_slow = 21\n    momentum_threshold = 0.0"
+  },
+  {
+    "timestamp": "2026-04-07T19:26:26.515468",
+    "strategy_name": "keltner_squeeze",
+    "strategy_type": "breakout",
+    "sharpe": 0.567,
+    "total_return": 0.0078,
+    "n_trades": 2,
+    "signal_source": "agent_iterated",
+    "decision": "positive",
+    "key_failure": "too few trades",
+    "code_snippet": "# Swept params: {'squeeze_threshold': 0.475, 'volume_threshold': 2.25, 'keltner_period': 14, 'bb_period': 20}\ndef generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    # Configurable parameters\n    keltner_period = 20\n    keltner_multiplier = 2.0\n    bb_period = 20\n    bb"
   }
 ]
