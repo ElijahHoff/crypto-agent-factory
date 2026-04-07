@@ -1,10 +1,13 @@
 """
-Iterative Signal Generator v0.9.2 — Robust code extraction + all v0.9 features.
+Iterative Signal Generator v0.9 — Memory + Multi-TF + Parameter Sweep.
 
-Changes from v0.9:
-- Uses code_extractor.py (handles JSON, markdown, classes, renamed functions)
-- signal_sandbox.py (unwraps classes, finds functions by signature)
-- Together: ~90% success rate vs ~40% before
+Flow:
+1. Load memory of past experiments
+2. Analyze market (1h) + trend (4h)
+3. Claude writes signal code with full context
+4. Parameter sweep (50 combos) on best code
+5. Apply 4h trend filter to final signals
+6. Save result to memory
 """
 
 import json
@@ -13,7 +16,6 @@ import pandas as pd
 from loguru import logger
 
 from src.backtesting.signal_sandbox import SignalSandbox
-from src.backtesting.code_extractor import extract_code
 from src.backtesting.experiment_memory import get_memory_context, save_experiment
 from src.backtesting.param_sweep import run_parameter_sweep
 from src.config import settings
@@ -51,45 +53,23 @@ def analyze_market(prices: pd.DataFrame) -> dict:
 
 
 SYSTEM_PROMPT = """You write Python signal generation functions for crypto trading.
+Output ONLY valid JSON: {"reasoning": "...", "signal_code": "def generate_signals(prices):\\n    ..."}
 
-RESPOND WITH ONLY A PYTHON CODE BLOCK. No JSON wrapping. No explanation outside the code block.
-Just a single ```python ... ``` block containing the function.
+RULES:
+- def generate_signals(prices) → pd.Series of +1/-1/0, same length as prices
+- prices has: open, high, low, close, volume (DatetimeIndex)
+- Use numpy, pandas only. Handle NaN with .fillna()
+- Generate 50-500 trades. Use CONFIGURABLE parameters (e.g. fast_period = 12)
+- NEVER use future data. No .shift(-1).
 
-```python
-def generate_signals(prices):
-    import numpy as np
-    import pandas as pd
-    
-    close = prices["close"]
-    # ... your logic ...
-    
-    signals = pd.Series(0, index=prices.index)
-    # signals[condition] = 1 or -1
-    return signals
-```
+WHAT WORKS: EMA crossovers with ADX filter, Donchian breakout + ATR stop,
+RSI divergence + volume confirmation, multi-period momentum (ROC 6h + 24h + 168h),
+Bollinger squeeze breakout, VWAP reversion with volume surge.
 
-CRITICAL RULES:
-1. Function MUST be named generate_signals with ONE argument: prices
-2. prices has columns: open, high, low, close, volume (DatetimeIndex)
-3. Return pd.Series of int: +1 (long), -1 (short), 0 (flat), same length as prices
-4. Put ALL imports INSIDE the function (import numpy as np, import pandas as pd)
-5. Handle NaN with .fillna()
-6. Generate 50-500 signal changes (not too few, not too many)
-7. NEVER use future data (no .shift(-1))
-8. Use CONFIGURABLE parameters as variables (fast_period = 12, not magic numbers)
-
-DO NOT wrap in a class. DO NOT add helper text outside the code block.
-Just one ```python block with def generate_signals(prices).
-
-WHAT WORKS IN CRYPTO:
-- EMA crossovers with ADX filter
-- Donchian breakout + ATR stop
-- RSI divergence + volume confirmation
-- Multi-period momentum (ROC 6h + 24h + 168h)
-- Bollinger squeeze breakout
-- In BEAR markets: short-biased, trend following downside
-- In BULL markets: momentum, breakout
-- In SIDEWAYS: mean reversion, range strategies
+KEY: In bearish markets → short-biased or trend-following. In bullish → momentum/breakout.
+In sideways → mean reversion or range strategies. ADAPT to regime.
+Use at least 2-3 combined indicators. Always include a volatility or volume filter.
+Make parameters TUNABLE (use variable names, not magic numbers).
 """
 
 
@@ -136,19 +116,15 @@ def generate_signals_iterative(
             logger.warning(f"Claude failed: {e}")
             break
 
-        # Use robust extractor
-        code = extract_code(text)
+        code = _extract_code(text)
         if not code:
-            logger.warning(f"Code extraction failed (attempt {attempt+1})")
-            log["iterations"].append({"attempt": attempt + 1, "error": "extraction_failed"})
+            log["iterations"].append({"attempt": attempt + 1, "error": "no code"})
             continue
-
-        logger.debug(f"Extracted code ({len(code)} chars), first line: {code.split(chr(10))[0][:80]}")
 
         # Execute
         signals = sandbox.execute(code, prices)
         if signals is None:
-            log["iterations"].append({"attempt": attempt + 1, "error": "execution_failed", "code_len": len(code)})
+            log["iterations"].append({"attempt": attempt + 1, "error": "execution failed"})
             continue
 
         sharpe, total_ret, n_trades = _evaluate(prices, signals)
@@ -166,7 +142,7 @@ def generate_signals_iterative(
             best_code = code
 
         if sharpe > SHARPE_THRESHOLD:
-            logger.info(f"Positive Sharpe! Running parameter sweep...")
+            logger.info(f"✅ Positive Sharpe! Running parameter sweep...")
             break
 
     # Parameter sweep on best code
@@ -175,7 +151,7 @@ def generate_signals_iterative(
             swept_signals, swept_params, sweep_log = run_parameter_sweep(best_code, prices)
             if swept_signals is not None:
                 swept_sharpe, swept_ret, swept_trades = _evaluate(prices, swept_signals)
-                logger.info(f"  Sweep best: Sharpe={swept_sharpe:.3f} (was {best_sharpe:.3f})")
+                logger.info(f"  Sweep best: Sharpe={swept_sharpe:.3f} (was {best_sharpe:.3f}), params={swept_params}")
                 if swept_sharpe > best_sharpe:
                     best_signals = swept_signals
                     best_sharpe = swept_sharpe
@@ -192,7 +168,7 @@ def generate_signals_iterative(
 
 
 def _build_prompt(name, market, memory, trend_ctx, spec, prev_code, prev_result, attempt):
-    parts = [f'Write a generate_signals() function for strategy: "{name}"']
+    parts = [f'Write generate_signals() for: "{name}"']
     parts.append(f"\nMARKET: {market['regime']}, return={market['total_return']}, "
                  f"vol={market['volatility']}, price={market['current']}, "
                  f"range={market['price_range']}, first_half={market['first_half']}, "
@@ -214,15 +190,47 @@ def _build_prompt(name, market, memory, trend_ctx, spec, prev_code, prev_result,
                      f"Return={prev_result.get('total_return', 'N/A')}, "
                      f"Trades={prev_result.get('n_trades', 'N/A')}")
         if prev_result.get("sharpe", 0) < 0:
-            parts.append("NEGATIVE SHARPE — make MEANINGFUL changes, not parameter tweaks.")
+            parts.append("⚠️ NEGATIVE SHARPE — make MEANINGFUL changes! Different indicators, logic, or direction.")
         if prev_result.get("n_trades", 0) < 50:
-            parts.append("Too few trades — loosen conditions.")
+            parts.append("⚠️ Too few trades — loosen conditions!")
         if prev_result.get("n_trades", 0) > 1000:
-            parts.append("Too many trades — tighten filters, costs are killing returns.")
+            parts.append("⚠️ Too many trades — costs eating returns! Tighten filters.")
 
-    parts.append(f"\nRespond with ONLY a ```python code block. No JSON. No explanation outside the block.")
-    parts.append(f"Attempt {attempt+1}/{MAX_ITERATIONS}.")
+    parts.append(f"\nUse CONFIGURABLE parameters (fast_period=12 not hardcoded 12).")
+    parts.append(f"Attempt {attempt+1}/{MAX_ITERATIONS}. {'Be creative, try something NEW.' if attempt > 1 else ''}")
     return "\n".join(parts)
+
+
+def _extract_code(text):
+    try:
+        clean = text.strip()
+        if clean.startswith("```"):
+            clean = clean.split("```")[1]
+            if clean.startswith("json"): clean = clean[4:]
+        if clean.endswith("```"): clean = clean[:-3]
+        data = json.loads(clean)
+        code = data.get("signal_code", "")
+        if code and "def " in code:
+            return code.replace("\\n", "\n").replace("\\t", "    ")
+    except json.JSONDecodeError:
+        pass
+    if "def generate_signals" in text:
+        start = text.find("def generate_signals")
+        block = text.rfind("```", 0, start)
+        if block >= 0:
+            code_start = text.find("\n", block) + 1
+            end = text.find("```", start)
+            if end > 0:
+                return text[code_start:end].strip()
+        lines = text[start:].split("\n")
+        func = [lines[0]]
+        for line in lines[1:]:
+            if line.strip() == "" or line[0:1] in (" ", "\t"):
+                func.append(line)
+            else:
+                break
+        return "\n".join(func)
+    return None
 
 
 def _evaluate(prices, signals):

@@ -118,5 +118,17 @@
     "decision": "negative",
     "key_failure": "poor walk-forward consistency",
     "code_snippet": "def generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters\n    short_roc_period = 6\n    medium_roc_period = 12\n    long_roc_period = 24\n    volume_period = 20\n    atr_period = 14\n    trend_strength_threshold = 0.5\n    volume_surge_factor = 1.3\n   "
+  },
+  {
+    "timestamp": "2026-04-07T18:16:28.403810",
+    "strategy_name": "adaptive_momentum_v2",
+    "strategy_type": "mean_reversion",
+    "sharpe": -6.026,
+    "total_return": -0.97,
+    "n_trades": 973,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "extreme negative Sharpe",
+    "code_snippet": "def generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    close = prices[\"close\"]\n    volume = prices[\"volume\"]\n    high = prices[\"high\"]\n    low = prices[\"low\"]\n    \n    # Configurable parameters\n    short_period = 8\n    medium_period = 21\n    long_period = 50\n    roc_sh"
   }
 ]
