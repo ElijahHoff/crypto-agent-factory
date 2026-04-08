@@ -1,41 +1,5 @@
 [
   {
-    "timestamp": "2026-04-03T17:31:41.541289",
-    "strategy_name": "adaptive_momentum",
-    "strategy_type": "momentum",
-    "sharpe": -4.072,
-    "total_return": -0.71,
-    "n_trades": 267,
-    "signal_source": "agent_iterated",
-    "decision": "negative",
-    "key_failure": "extreme negative Sharpe",
-    "code_snippet": "def generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters\n    fast_momentum_period = 8\n    medium_momentum_period = 24\n    slow_momentum_period = 72\n    volatility_lookback = 48\n    volume_sma_period = 20\n    atr_period = 14\n    \n    # Adaptive t"
-  },
-  {
-    "timestamp": "2026-04-03T17:38:42.332974",
-    "strategy_name": "ema_trend_filter",
-    "strategy_type": "volatility",
-    "sharpe": -1.351,
-    "total_return": -0.0789,
-    "n_trades": 16,
-    "signal_source": "agent_iterated",
-    "decision": "negative",
-    "key_failure": "too few trades",
-    "code_snippet": "# Swept params: {'fast_ema_period': 16.0, 'ema_slope_threshold': 0.0005, 'medium_ema_period': 14, 'slow_ema_period': 66}\ndef generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # Configurable parameters\n    fast_ema_period = 8\n    medium_ema_period = 21\n    slow_ema_per"
-  },
-  {
-    "timestamp": "2026-04-03T17:48:02.268599",
-    "strategy_name": "breakout_atr_stop",
-    "strategy_type": "volatility",
-    "sharpe": -1.485,
-    "total_return": -0.0983,
-    "n_trades": 36,
-    "signal_source": "agent_iterated",
-    "decision": "negative",
-    "key_failure": "poor walk-forward consistency",
-    "code_snippet": "# Swept params: {'volume_threshold': 2.4, 'short_breakout_period': 7, 'medium_breakout_period': 14, 'long_breakout_period': 53}\ndef generate_signals(prices):\n    import pandas as pd\n    import numpy as np\n    \n    # CONFIGURABLE PARAMETERS\n    short_breakout_period = 10\n    medium_breakout_period = "
-  },
-  {
     "timestamp": "2026-04-03T17:57:47.967404",
     "strategy_name": "rsi_volume_divergence",
     "strategy_type": "mean_reversion",
@@ -586,5 +550,53 @@
     "decision": "negative",
     "key_failure": "too few trades",
     "code_snippet": "# Swept params: {'keltner_mult': 3.0, 'bb_mult': 1.0, 'volume_threshold': 1.7999999999999998, 'squeeze_exit_threshold': 0.01}\ndef generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    close = prices[\"close\"]\n    high = prices[\"high\"]\n    low = prices[\"low\"]\n    volume = p"
+  },
+  {
+    "timestamp": "2026-04-07T23:43:10.644573",
+    "strategy_name": "simple_roc_trend_v2_r3",
+    "strategy_type": "mean_reversion",
+    "sharpe": -1.346,
+    "total_return": -0.0838,
+    "n_trades": 19,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "too few trades",
+    "code_snippet": "def generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    close = prices[\"close\"]\n    volume = prices[\"volume\"]\n    high = prices[\"high\"]\n    low = prices[\"low\"]\n    \n    # Configurable parameters - focus on quality over quantity\n    roc_short_period = 6  # 1 day lookback"
+  },
+  {
+    "timestamp": "2026-04-07T23:49:50.779045",
+    "strategy_name": "ema_slow_trend_r3",
+    "strategy_type": "mean_reversion",
+    "sharpe": -0.512,
+    "total_return": -0.1684,
+    "n_trades": 45,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "",
+    "code_snippet": "# Swept params: {'volume_threshold': 3.6, 'ema_slow_period': 112, 'ema_fast_period': 28, 'rsi_period': 18}\ndef generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    close = prices[\"close\"]\n    high = prices[\"high\"]\n    low = prices[\"low\"]\n    volume = prices[\"volume\"]\n   "
+  },
+  {
+    "timestamp": "2026-04-07T23:57:13.433673",
+    "strategy_name": "donchian_atr_v2_r3",
+    "strategy_type": "volatility",
+    "sharpe": -1.823,
+    "total_return": -0.4737,
+    "n_trades": 108,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "",
+    "code_snippet": "# Swept params: {'volume_threshold': 3.0, 'donchian_period': 26, 'atr_period': 18, 'volume_ma_period': 20}\ndef generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    close = prices[\"close\"]\n    high = prices[\"high\"]\n    low = prices[\"low\"]\n    volume = prices[\"volume\"]\n   "
+  },
+  {
+    "timestamp": "2026-04-08T08:30:43.375664",
+    "strategy_name": "bollinger_squeeze_v2_r3",
+    "strategy_type": "volatility",
+    "sharpe": -0.037,
+    "total_return": -0.0018,
+    "n_trades": 9,
+    "signal_source": "agent_iterated",
+    "decision": "negative",
+    "key_failure": "too few trades",
+    "code_snippet": "# Swept params: {'volume_threshold': 1.7999999999999998, 'bb_period': 20, 'squeeze_period': 7, 'volume_ma_period': 26}\ndef generate_signals(prices):\n    import numpy as np\n    import pandas as pd\n    \n    close = prices[\"close\"]\n    high = prices[\"high\"]\n    low = prices[\"low\"]\n    volume = prices[\""
   }
 ]
