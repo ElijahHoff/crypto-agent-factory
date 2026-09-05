@@ -97,6 +97,9 @@ class BacktestEngine:
         # Funding cost for positions held (approximate: per-bar cost)
         bars_per_8h = max(1, 8 * 60 // self._estimate_bar_minutes(prices.index))
         funding_per_bar = (self.cost_model.funding_bps / 10_000) / bars_per_8h
+        # Conservative: charged on both sides. Real funding is signed and
+        # regime-dependent (shorts often PAY in bear markets); wire
+        # funding_data.py in before trusting any short-biased result.
         funding_costs = position.abs() * funding_per_bar
 
         # Net returns
@@ -110,6 +113,8 @@ class BacktestEngine:
         trades = self._extract_trades(close, position, signals)
 
         # ── Compute metrics ──────────────────────────────────────────
+        # NOTE: "in_sample" here is the FULL sample (dev + holdout). Honest
+        # holdout metrics are added by the runner via the `holdout` key.
         metrics_is = self._compute_metrics(strategy_returns_net, equity_net, trades, "in_sample")
 
         # ── Split analysis ───────────────────────────────────────────
@@ -143,6 +148,15 @@ class BacktestEngine:
             "trades": trades,
             "total_costs_pct": float(costs.sum() + funding_costs.sum()) * 100,
         }
+
+    def run_holdout(self, prices: pd.DataFrame, signals: pd.Series, holdout_start) -> BacktestMetrics:
+        """Metrics on the untouched holdout segment only (signals already computed on full history)."""
+        mask = prices.index >= pd.Timestamp(holdout_start)
+        sub_prices = prices[mask]
+        sub_signals = signals.reindex(prices.index).fillna(0)[mask]
+        if len(sub_prices) < 50:
+            return self._empty_metrics()
+        return self.run_backtest(sub_prices, sub_signals)["in_sample"]
 
     # ── Metrics ──────────────────────────────────────────────────────────
 
@@ -180,7 +194,8 @@ class BacktestEngine:
         if underwater.any():
             uw_groups = (~underwater).cumsum()
             uw_durations = underwater.groupby(uw_groups).sum()
-            max_uw_days = uw_durations.max()
+            bars_per_day = ann_factor / 365
+            max_uw_days = float(uw_durations.max()) / max(bars_per_day, 1e-9)
         else:
             max_uw_days = 0
 
@@ -341,9 +356,9 @@ class BacktestEngine:
         strategy_returns = returns * signals.shift(1).fillna(0)
 
         # Apply costs
-        trades = (signals != signals.shift(1)).astype(int)
-        cost_per_trade = self.commission_bps / 10000 + self.slippage_bps / 10000
-        costs = trades * cost_per_trade
+        trades = (signals != signals.shift(1)).astype(int)  # kept for trade counting only
+        cost_per_trade = self.cost_model.total_entry_cost_bps / 10_000
+        costs = signals.shift(1).fillna(0).diff().abs().fillna(0) * cost_per_trade
         net_returns = strategy_returns - costs
 
         # Metrics

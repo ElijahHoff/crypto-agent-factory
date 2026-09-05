@@ -28,6 +28,11 @@ def generate_report(experiment: dict, output_dir: str = "experiments") -> str:
     walk_forward = _dict(backtest.get("walk_forward"))
     is_data = _dict(backtest.get("in_sample"))
     oos_data = _dict(backtest.get("out_of_sample"))
+    holdout = _dict(backtest.get("holdout"))
+    validation = _dict(backtest.get("validation"))
+    lookahead = _dict(backtest.get("lookahead_test"))
+    true_wf = _dict(backtest.get("true_walk_forward"))
+    vol_target = _dict(backtest.get("vol_target"))
     signal_stats = _dict(backtest.get("signal_stats"))
     robustness = _dict(backtest.get("robustness"))
     chart_analysis = backtest.get("chart_analysis", "")
@@ -50,13 +55,13 @@ def generate_report(experiment: dict, output_dir: str = "experiments") -> str:
 
     # Key Metrics
     s.append("## Key Metrics\n")
-    s.append("| Metric | In-Sample | Out-of-Sample |")
+    s.append("| Metric | Full sample (dev+holdout) | HOLDOUT (never seen by generator) |")
     s.append("|--------|-----------|---------------|")
-    _row(s, "Sharpe Ratio", is_data.get("sharpe"), oos_data.get("sharpe"))
-    _row(s, "Total Return", is_data.get("total_return"), oos_data.get("total_return"), pct=True)
+    _row(s, "Sharpe Ratio", is_data.get("sharpe"), holdout.get("sharpe"))
+    _row(s, "Total Return", is_data.get("total_return"), holdout.get("total_return"), pct=True)
     _row(s, "CAGR", is_data.get("cagr"), None, pct=True)
-    _row(s, "Max Drawdown", is_data.get("max_drawdown"), oos_data.get("max_drawdown"), pct=True)
-    _row(s, "Total Trades", is_data.get("total_trades"), oos_data.get("total_trades"), fmt="d")
+    _row(s, "Max Drawdown", is_data.get("max_drawdown"), holdout.get("max_drawdown"), pct=True)
+    _row(s, "Total Trades", is_data.get("total_trades"), holdout.get("total_trades"), fmt="d")
     _row(s, "Win Rate", is_data.get("win_rate"), None, pct=True)
     _row(s, "Profit Factor", is_data.get("profit_factor"), None)
     _row(s, "Calmar", is_data.get("calmar"), None)
@@ -73,6 +78,50 @@ def generate_report(experiment: dict, output_dir: str = "experiments") -> str:
                  f"{signal_stats.get('flat_bars', 0)} flat "
                  f"({signal_stats.get('transitions', 0)} transitions)")
     s.append("")
+
+    # Statistical validation (v1.0)
+    if validation or lookahead or true_wf:
+        s.append("## Statistical Validation (holdout)\n")
+        if holdout.get("start"):
+            s.append(f"Holdout starts **{str(holdout.get('start'))[:10]}**; the LLM loop and parameter sweep never saw it.\n")
+        if validation:
+            sig = "✅ significant" if validation.get("statistically_significant") else "❌ NOT significant"
+            s.append("| Test | Value | Meaning |")
+            s.append("|------|-------|---------|")
+            s.append(f"| Holdout Sharpe | {_fv(validation.get('holdout_sharpe'))} | {validation.get('holdout_bars', '?')} bars |")
+            s.append(f"| Dev Sharpe | {_fv(validation.get('dev_sharpe'))} | what the generator optimised |")
+            s.append(f"| Trials run on dev | {validation.get('n_trials', '?')} | LLM attempts + sweep combos |")
+            s.append(f"| Noise max on dev after that many trials | {_fv(validation.get('dev_expected_max_sharpe_null'))} | E[max Sharpe] of random strategies |")
+            s.append(f"| Dev deflated Sharpe (DSR) | {_fv(validation.get('dev_dsr'))} | P(dev edge is not the search artefact); need ≥ 0.95 |")
+            s.append(f"| Holdout PSR | {_fv(validation.get('psr'))} | P(true holdout Sharpe > 0); need ≥ 0.95 |")
+            s.append(f"| Holdout DSR across batch | {_fv(validation.get('holdout_dsr_batch'))} | deflated for {validation.get('n_experiments_sharing_holdout', '?')} experiments sharing this holdout |")
+            ci = validation.get("bootstrap_ci") or [None, None]
+            s.append(f"| Bootstrap 95% CI | [{_fv(ci[0])}, {_fv(ci[1])}] | block bootstrap, 24h blocks |")
+            s.append(f"| Permutation p-value | {_fv(validation.get('permutation_p'))} | share of shuffled signals doing as well |")
+            s.append(f"| Min track record | {_fv(validation.get('min_track_record_bars'), fmt='.0f')} bars | to be 95% sure Sharpe > 0 |")
+            s.append(f"\n**Verdict**: {sig}. {validation.get('note', '')}\n")
+        if lookahead:
+            ok = "✅ passed" if lookahead.get("passed") else "❌ FAILED"
+            s.append(f"**Look-ahead truncation test**: {ok} — {lookahead.get('detail', '')}\n")
+        if true_wf and true_wf.get("n_folds"):
+            s.append(f"**True walk-forward** (params re-selected per fold): OOS Sharpe {_fv(true_wf.get('oos_sharpe'))}, "
+                     f"mean IS {_fv(true_wf.get('mean_is_sharpe'))}, WFE {_fv(true_wf.get('wf_efficiency'), fmt='.2f')} "
+                     f"(need ≥ 0.5), {true_wf.get('positive_folds')}/{true_wf.get('n_folds')} folds positive, "
+                     f"param stability {_fv(true_wf.get('param_stability'), pct=True)}\n")
+            folds = true_wf.get("folds") or []
+            if folds:
+                s.append("| Fold | Train | Test | IS Sharpe | OOS Sharpe | OOS Return | Trades | Params |")
+                s.append("|------|-------|------|-----------|------------|------------|--------|--------|")
+                for f in folds:
+                    s.append(f"| {f.get('fold')} | {f.get('train_start')}→{f.get('train_end')} | "
+                             f"{f.get('test_start')}→{f.get('test_end')} | {_fv(f.get('is_sharpe'))} | "
+                             f"{_fv(f.get('oos_sharpe'))} | {_fv(f.get('oos_return'), pct=True)} | "
+                             f"{f.get('oos_trades')} | `{f.get('params')}` |")
+                s.append("")
+        if vol_target:
+            s.append(f"**Vol-targeting overlay (30% ann.)**: holdout Sharpe {_fv(vol_target.get('holdout_sharpe'))} "
+                     f"vs raw {_fv(vol_target.get('raw_holdout_sharpe'))}; max DD "
+                     f"{_fv(vol_target.get('holdout_max_dd'), fmt='.1f')}% vs {_fv(vol_target.get('raw_holdout_max_dd'), fmt='.1f')}%\n")
 
     # Benchmark Comparison
     if benchmarks:
@@ -97,7 +146,7 @@ def generate_report(experiment: dict, output_dir: str = "experiments") -> str:
 
     # Walk-Forward
     if walk_forward:
-        s.append("## Walk-Forward Analysis\n")
+        s.append("## Sub-period Analysis (fixed signal, 8 chunks)\n")
         n_per = walk_forward.get("n_periods", 0)
         pos = walk_forward.get("positive_periods", 0)
         cons = walk_forward.get("consistency_ratio", 0)

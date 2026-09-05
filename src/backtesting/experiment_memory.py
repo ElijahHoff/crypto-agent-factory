@@ -35,6 +35,12 @@ def save_experiment(
     decision: str,
     key_failure: str = "",
     code_snippet: str = "",
+    holdout_sharpe: float | None = None,
+    holdout_trades: int = 0,
+    dsr: float = 0.0,
+    n_trials: int = 0,
+    wf_efficiency: float = 0.0,
+    dev_sharpe: float | None = None,
 ) -> None:
     """Save experiment result to memory."""
     memory = load_memory()
@@ -50,6 +56,14 @@ def save_experiment(
         "decision": decision,
         "key_failure": key_failure[:200],
         "code_snippet": code_snippet[:300],
+        # v1.0 — what the LLM never saw
+        "holdout_sharpe": round(holdout_sharpe, 3) if holdout_sharpe is not None else None,
+        "holdout_trades": int(holdout_trades),
+        "dev_sharpe": round(dev_sharpe, 3) if dev_sharpe is not None else None,
+        "psr": round(float(dsr), 3),
+        "dsr": round(float(dsr), 3),
+        "n_trials": int(n_trials),
+        "wf_efficiency": round(float(wf_efficiency), 3),
     }
 
     memory.append(entry)
@@ -69,43 +83,50 @@ def get_memory_context(limit: int = 10) -> str:
     if not memory:
         return ""
 
-    # Sort by Sharpe (best first)
-    memory.sort(key=lambda x: x.get("sharpe", -999), reverse=True)
+    # The generator only ever sees DEVELOPMENT-window numbers. Feeding holdout
+    # results back into the prompt would let the LLM learn the holdout across
+    # experiments and quietly turn it into another in-sample set.
+    def _dev(m):
+        d = m.get("dev_sharpe")
+        return d if d is not None else m.get("sharpe", -999)
+    memory.sort(key=_dev, reverse=True)
 
-    lines = ["=== PAST EXPERIMENT RESULTS (learn from these!) ==="]
+    lines = ["=== PAST EXPERIMENT RESULTS (development window only) ===",
+             "Sharpe below is on the development window. The holdout verdict is NOT shown on purpose."]
 
     # Best results
-    best = [m for m in memory if m.get("sharpe", -999) > -1]
+    best = [m for m in memory if _dev(m) > -1]
     if best:
-        lines.append("\nBEST APPROACHES (Sharpe > -1):")
+        lines.append("\nBEST APPROACHES (dev Sharpe):")
         for m in best[:5]:
             lines.append(
                 f"  {m['strategy_name']} [{m.get('strategy_type', '?')}]: "
-                f"Sharpe={m['sharpe']}, Return={m['total_return']:.1%}, "
-                f"Trades={m.get('n_trades', 0)}"
+                f"dev Sharpe={_dev(m)}, Trades={m.get('n_trades', 0)}"
             )
             if m.get("code_snippet"):
                 lines.append(f"    Code hint: {m['code_snippet'][:100]}...")
 
     # Worst failures (to avoid)
-    worst = [m for m in memory if m.get("sharpe", 0) < -3]
+    worst = [m for m in memory if _dev(m) < -3 or m.get("key_failure", "").startswith("look-ahead")]
     if worst:
         lines.append("\nFAILED APPROACHES (DO NOT REPEAT):")
         for m in worst[-5:]:
+            kf = m.get("key_failure", "")
+            reason = "look-ahead in code" if kf.startswith("look-ahead") else "negative dev Sharpe"
             lines.append(
                 f"  ❌ {m['strategy_name']} [{m.get('strategy_type', '?')}]: "
-                f"Sharpe={m['sharpe']}, {m.get('key_failure', 'unknown failure')}"
+                f"dev Sharpe={_dev(m)}, {reason}"
             )
 
     # Summary stats
-    all_sharpes = [m.get("sharpe", 0) for m in memory]
+    all_sharpes = [_dev(m) for m in memory]  # dev-window only
     if all_sharpes:
         lines.append(f"\nSummary: {len(memory)} experiments, "
-                     f"avg Sharpe={sum(all_sharpes)/len(all_sharpes):.2f}, "
+                     f"avg dev Sharpe={sum(all_sharpes)/len(all_sharpes):.2f}, "
                      f"best={max(all_sharpes):.2f}, worst={min(all_sharpes):.2f}")
 
         positive = sum(1 for s in all_sharpes if s > 0)
-        lines.append(f"Positive Sharpe: {positive}/{len(all_sharpes)} ({positive/len(all_sharpes):.0%})")
+        lines.append(f"Positive dev Sharpe: {positive}/{len(all_sharpes)} ({positive/len(all_sharpes):.0%})")
 
     lines.append("=== END MEMORY ===")
     return "\n".join(lines)

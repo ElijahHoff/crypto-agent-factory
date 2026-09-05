@@ -66,6 +66,15 @@ Return JSON:
             experiment = context.get("experiment", {})
             return f"""Review this experiment and make a go/no-go decision.
 
+HARD GATES (v1.0 methodology) — reject unless ALL hold:
+- backtest_result.lookahead_test.passed is true (otherwise the backtest is invalid, full stop)
+- backtest_result.holdout.sharpe > 0 with >= 20 holdout trades — the holdout is the only
+  number the generator never saw; the "in_sample"/full-sample Sharpe was optimised and is not evidence
+- backtest_result.validation.dev_dsr >= 0.95 (dev Sharpe survives its own search) AND backtest_result.validation.psr >= 0.95 (holdout Sharpe significantly > 0); note holdout_dsr_batch — the holdout is shared by every experiment in the batch
+- backtest_result.validation.permutation_p < 0.05
+- backtest_result.true_walk_forward.wf_efficiency >= 0.5 with a majority of folds positive
+Treat robustness checks whose detail says "SUSPICIOUS: stress improved results" as a red flag.
+
 Experiment data:
 {experiment}
 

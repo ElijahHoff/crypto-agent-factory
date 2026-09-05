@@ -40,6 +40,7 @@ COST_PER_TRADE = 0.0017  # 17bps round-trip
 class AssetResult:
     symbol: str
     sharpe: float = 0.0
+    holdout_sharpe: float = 0.0
     total_return: float = 0.0
     max_drawdown: float = 0.0
     n_trades: int = 0
@@ -69,6 +70,8 @@ def run_multi_asset(
     backtest_design: dict,
     universe: list | None = None,
     lookback_days: int = 730,  # 2 years default
+    agent_code: str | None = None,
+    holdout_pct: float = 0.30,
 ) -> dict:
     """
     Run strategy across multiple assets and build portfolio.
@@ -106,8 +109,11 @@ def run_multi_asset(
         logger.error("Need at least 2 assets for portfolio")
         return {"error": "insufficient_assets", "fetched": len(all_prices)}
 
-    # 2. Extract agent signal code (if available)
-    agent_code = extract_signal_code(quant_spec) if isinstance(quant_spec, dict) else None
+    # 2. Use the FROZEN code from the iterative loop (v1.0). Before, this
+    #    pulled a different draft from quant_spec, so the portfolio tables
+    #    described a different strategy than the headline result.
+    if not agent_code:
+        agent_code = extract_signal_code(quant_spec) if isinstance(quant_spec, dict) else None
 
     # 3. Classify strategy
     strategy_type = sig_gen.classify_strategy(strategy_name, str(quant_spec)[:500])
@@ -137,11 +143,12 @@ def run_multi_asset(
         if signals is None:
             signals = sig_gen.generate(prices, strategy_type=strategy_type)
 
-        # Compute returns
+        # Compute returns (flip long->short charged as two trades)
         price_returns = prices["close"].pct_change().fillna(0)
-        strat_returns = price_returns * signals.shift(1).fillna(0)
-        trades = (signals != signals.shift(1)).astype(float)
-        strat_returns = strat_returns - trades * COST_PER_TRADE
+        position = signals.shift(1).fillna(0)
+        turnover = position.diff().abs().fillna(0)
+        strat_returns = price_returns * position - turnover * COST_PER_TRADE
+        trades = (turnover > 0).astype(float)
 
         equity = (1 + strat_returns).cumprod()
         total_ret = float(equity.iloc[-1] - 1)
@@ -150,8 +157,13 @@ def run_multi_asset(
         peak = equity.cummax()
         dd = ((equity - peak) / peak).min()
 
+        ho = int(len(strat_returns) * (1 - holdout_pct))
+        ho_r = strat_returns.iloc[ho:]
+        ho_sharpe = float(ho_r.mean() / ho_r.std() * np.sqrt(8760)) if ho_r.std() > 0 else 0.0
+
         ar = AssetResult(
             symbol=symbol,
+            holdout_sharpe=round(ho_sharpe, 3),
             sharpe=round(sharpe, 3),
             total_return=round(total_ret, 4),
             max_drawdown=round(float(dd), 4),
@@ -181,15 +193,18 @@ def run_multi_asset(
                           {s: 1.0/len(returns_df.columns) for s in returns_df.columns})
     portfolios["equal_weight"] = eq
 
-    # Inverse volatility
-    vols = returns_df.std()
+    # Inverse volatility — weights from the development window only
+    dev_end = int(len(returns_df) * (1 - holdout_pct))
+    vols = returns_df.iloc[:dev_end].std()
     inv_vol = 1.0 / vols.replace(0, 1e-10)
     inv_vol_w = inv_vol / inv_vol.sum()
     iv = _build_portfolio(returns_df, "inverse_vol", inv_vol_w.to_dict())
     portfolios["inverse_vol"] = iv
 
-    # Momentum-weighted (weight by recent Sharpe)
-    recent = returns_df.iloc[-720:]  # last 30 days
+    # Momentum-weighted: weights from the DEVELOPMENT window only (v1.0).
+    # Using the last 30 days of the full history chose weights with
+    # knowledge of the outcome — look-ahead.
+    recent = returns_df.iloc[max(0, dev_end - 720):dev_end]
     recent_sharpe = recent.mean() / recent.std().replace(0, 1e-10)
     # Only positive Sharpe assets get weight
     mom_w = recent_sharpe.clip(lower=0)
@@ -225,7 +240,8 @@ def run_multi_asset(
         "n_assets": len(all_prices),
         "asset_results": {
             s: {
-                "sharpe": r.sharpe, "total_return": r.total_return,
+                "sharpe": r.sharpe, "holdout_sharpe": r.holdout_sharpe,
+                "total_return": r.total_return,
                 "max_drawdown": r.max_drawdown, "n_trades": r.n_trades,
                 "n_long": r.n_long, "n_short": r.n_short,
                 "equity": r.equity,

@@ -1,4 +1,12 @@
-"""Robustness checks: stress tests, parameter perturbation, signal degradation."""
+"""Robustness checks: stress tests, parameter perturbation, signal degradation.
+
+v1.0: thresholds are RELATIVE to the baseline Sharpe (a stressed run must keep
+>= 50% of it and stay > 0) instead of absolute 0.3/0.5 cut-offs that every
+strategy with baseline Sharpe 0.4 failed by construction. The noise test is
+seeded (reproducible) and averaged over several draws. A stressed run that
+*improves* on the baseline (e.g. delayed entry) is flagged as suspicious —
+it usually means the signal is anti-correlated with the next bar, i.e. noise.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +33,7 @@ class RobustnessTester:
     ) -> RobustnessReport:
         """Run all robustness checks and produce a report."""
         checks: list[RobustnessCheck] = []
+        self._base_sharpe = float(getattr(base_result.get("in_sample"), "sharpe", 0.0) or 0.0)
 
         checks.append(self._check_fee_sensitivity(prices, signals, design))
         checks.append(self._check_slippage_sensitivity(prices, signals, design))
@@ -47,6 +56,19 @@ class RobustnessTester:
 
     # ── Individual Checks ────────────────────────────────────────────────
 
+    _base_sharpe: float = 0.0
+
+    def _relative_pass(self, sharpe: float, keep: float = 0.5) -> tuple[bool, str]:
+        """Pass if stressed Sharpe > 0 and keeps >= `keep` of the baseline."""
+        base = self._base_sharpe
+        if base <= 0:
+            return False, f"baseline Sharpe {base:.3f} <= 0"
+        ok = sharpe > 0 and sharpe >= keep * base
+        note = f"retained {sharpe / base:.0%} of baseline {base:.3f}"
+        if sharpe > base * 1.15:
+            note += " — SUSPICIOUS: stress improved results"
+        return ok, note
+
     def _check_fee_sensitivity(
         self, prices: pd.DataFrame, signals: pd.Series, design: BacktestDesign | None
     ) -> RobustnessCheck:
@@ -58,12 +80,12 @@ class RobustnessTester:
         result = engine_2x.run_backtest(prices, signals, design)
         sharpe = result["in_sample"].sharpe
 
-        passed = sharpe > 0.5
+        passed, note = self._relative_pass(sharpe)
         return RobustnessCheck(
             name="fee_sensitivity_2x",
             description="Strategy performance with 2x commission",
             passed=passed,
-            details=f"Sharpe with 2x fees: {sharpe:.3f}",
+            details=f"Sharpe with 2x fees: {sharpe:.3f} ({note})",
             severity="high",
         )
 
@@ -78,12 +100,12 @@ class RobustnessTester:
         result = engine_3x.run_backtest(prices, signals, design)
         sharpe = result["in_sample"].sharpe
 
-        passed = sharpe > 0.3
+        passed, note = self._relative_pass(sharpe)
         return RobustnessCheck(
             name="slippage_sensitivity_3x",
             description="Strategy performance with 3x slippage",
             passed=passed,
-            details=f"Sharpe with 3x slippage: {sharpe:.3f}",
+            details=f"Sharpe with 3x slippage: {sharpe:.3f} ({note})",
             severity="high",
         )
 
@@ -96,12 +118,12 @@ class RobustnessTester:
         result = self.engine.run_backtest(prices, delayed_signals, design)
         sharpe = result["in_sample"].sharpe
 
-        passed = sharpe > 0.3
+        passed, note = self._relative_pass(sharpe)
         return RobustnessCheck(
             name="delayed_entry_1bar",
             description="Strategy with 1-bar delayed entry (latency test)",
             passed=passed,
-            details=f"Sharpe with 1-bar delay: {sharpe:.3f}",
+            details=f"Sharpe with 1-bar delay: {sharpe:.3f} ({note})",
             severity="medium",
         )
 
@@ -116,12 +138,12 @@ class RobustnessTester:
         result = engine_wide.run_backtest(prices, signals, design)
         sharpe = result["in_sample"].sharpe
 
-        passed = sharpe > 0.3
+        passed, note = self._relative_pass(sharpe)
         return RobustnessCheck(
             name="spread_widening_5x",
             description="Strategy with 5x spread (illiquid conditions)",
             passed=passed,
-            details=f"Sharpe with 5x spread: {sharpe:.3f}",
+            details=f"Sharpe with 5x spread: {sharpe:.3f} ({note})",
             severity="medium",
         )
 
@@ -188,19 +210,29 @@ class RobustnessTester:
         self, prices: pd.DataFrame, signals: pd.Series, design: BacktestDesign | None
     ) -> RobustnessCheck:
         """How does performance degrade with noise added to signals?"""
-        logger.info("Robustness: signal degradation (10% noise)")
-        noisy = signals.copy()
-        mask = np.random.random(len(noisy)) < 0.10  # Flip 10% of signals
-        noisy[mask] = 0
+        logger.info("Robustness: trade dropout (10% of positions removed, 5 seeded draws)")
+        # v1.0: drop whole POSITIONS, not random bars. Zeroing 10% of bars
+        # inside a held position created ~2 extra round-trips per hit and
+        # tested transaction costs, not signal quality.
+        rng = np.random.default_rng(42)
+        sig = signals.reindex(prices.index).fillna(0)
+        seg_id = (sig != sig.shift(1)).cumsum()
+        active_ids = seg_id[sig != 0].unique()
+        sharpes = []
+        for _ in range(5):
+            noisy = sig.copy()
+            if len(active_ids) > 0:
+                drop = rng.random(len(active_ids)) < 0.10
+                noisy[seg_id.isin(active_ids[drop])] = 0
+            result = self.engine.run_backtest(prices, noisy, design)
+            sharpes.append(result["in_sample"].sharpe)
+        sharpe = float(np.mean(sharpes))
 
-        result = self.engine.run_backtest(prices, noisy, design)
-        sharpe = result["in_sample"].sharpe
-
-        passed = sharpe > 0.3
+        passed, note = self._relative_pass(sharpe)
         return RobustnessCheck(
             name="signal_degradation_10pct",
-            description="Strategy with 10% of signals randomly zeroed",
+            description="Strategy with 10% of positions randomly dropped (mean of 5 draws)",
             passed=passed,
-            details=f"Sharpe with 10% signal noise: {sharpe:.3f}",
+            details=f"Sharpe with 10% signal noise: {sharpe:.3f} ({note})",
             severity="medium",
         )

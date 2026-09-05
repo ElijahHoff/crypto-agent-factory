@@ -34,9 +34,11 @@ while true; do
   cat experiments/memory.json | python3 -c "
 import json,sys
 data=json.load(sys.stdin)
-data.sort(key=lambda x: x['sharpe'], reverse=True)
+def ho(e): return e.get('holdout_sharpe') if e.get('holdout_sharpe') is not None else -99
+data.sort(key=ho, reverse=True)
+print('  holdout  PSR   WFE   dev     name                                 holdout_trades')
 for e in data[:10]:
-    print(f\"  {e['sharpe']:+.3f}  {e['strategy_name']:35s}  trades={e.get('n_trades',0)}\")
+    print(f\"  {ho(e):+.3f}  {e.get('psr',0):.2f}  {e.get('wf_efficiency',0):.2f}  {e.get('dev_sharpe') or e['sharpe']:+.3f}  {e['strategy_name']:35s}  {e.get('holdout_trades',0)}  {e.get('key_failure','')}\")
 print(f'  Total: {len(data)} experiments')
 "
 
