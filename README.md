@@ -189,9 +189,36 @@ Example memory after several runs:
 - v0.8 -- Multi-asset portfolio (BTC/ETH/SOL/BNB), 2-year history, 3 weighting methods
 - v0.9 -- Experiment memory, parameter sweep (50 combos), multi-timeframe (4h trend filter), per-asset charts
 
+## Methodology v1.0 (what makes a result believable)
+
+The pipeline used to optimise, sweep and report on the same two years of data, and
+told the LLM the full-period return and regime before it wrote code. v1.0 replaces
+that with a protocol you would accept from a human quant:
+
+| Stage | Rule |
+|-------|------|
+| Development window | First 70% of history. The LLM loop, the feedback, the parameter sweep and the 4h-trend description only ever see this. |
+| Holdout | Last 30%. Evaluated once, after the code is frozen. Never fed back into prompts or memory context. |
+| Look-ahead test | Every candidate is re-run on truncated data; if any past signal changes, the code is rejected (`validation.lookahead_truncation_test`). |
+| 4h trend filter | Aligned by candle *close* time (`multi_timeframe.align_higher_tf`), not open time. |
+| Parameter sweep | Plateau optimum (mean Sharpe over neighbouring grid points), not the single peak. Every combo counts as a trial. |
+| Within-run selection | Dev Sharpe is deflated by the number of trials (Deflated Sharpe Ratio, Bailey & López de Prado). |
+| Holdout significance | Probabilistic Sharpe Ratio, block-bootstrap CI, signal-permutation p-value. |
+| Batch reuse | The holdout is shared by all experiments, so a batch-level DSR (N = experiments) is reported too. |
+| True walk-forward | Parameters re-selected per fold on train, applied to the next test fold; WFE = OOS/IS Sharpe (need ≥ 0.5). |
+| Robustness | Stressed runs must keep ≥ 50% of baseline Sharpe; a stress that *improves* results is flagged. Noise test drops whole positions. |
+| Risk overlay | Volatility targeting (`vol_target.py`) reported alongside the raw signal. |
+| Leaderboard | `memory.json` ranks by holdout Sharpe / PSR / WFE; the generator only sees dev numbers. |
+
+Reading a report: the only numbers that count are in **Statistical Validation (holdout)**.
+The full-sample Sharpe at the top is what the generator optimised and is shown for
+context only.
+
 ## Limitations
 
-All strategies tested so far have negative in-sample Sharpe ratios, with one exception (multi_roc_momentum at +0.675 with only 2 trades). This is expected: finding profitable systematic strategies is genuinely difficult, and the system is doing its job by correctly rejecting bad ideas.
+Every "positive" entry in the pre-v1.0 leaderboard had 1–9 trades and was obtained by searching ~15,000 parameter/attempt combinations on one two-year path. On a pure random walk the same search reaches Sharpe ≈ +0.9 on average (see `docs/METHODOLOGY_AUDIT.md`), so those results are consistent with noise. Old `memory.json` entries have no holdout fields and rank below v1.0 entries.
+
+With ~7 months of hourly holdout the standard error of an annualised Sharpe is ≈ 1.3, so a single run can only reject clearly bad strategies; confirming a good one needs a longer holdout, more assets, or a live paper track record (the report prints the minimum track record length).
 
 Claude sometimes wraps signal code in classes instead of a bare function, causing sandbox execution to fail. The system falls back to built-in signals in those cases.
 

@@ -1,5 +1,11 @@
 """
-Multi-Timeframe Filter v0.9 — 4h trend direction + 1h signal entries.
+Multi-Timeframe Filter v1.0 — 4h trend direction + 1h signal entries.
+
+v1.0 fix: exchange candles are labelled by their OPEN time. Forward-filling a
+4h series onto a 1h index therefore let the 1h bars *inside* a 4h candle see
+that candle's close (up to 3 hours of future data). The trend is now shifted
+to the candle's CLOSE time before being aligned, and ``get_trend_context``
+only describes the market up to ``as_of`` so the LLM never sees the holdout.
 
 Standard practice: higher timeframe determines DIRECTION, lower timeframe finds ENTRY.
 - 4h EMA(50) > EMA(200) → only LONG signals allowed on 1h
@@ -62,10 +68,26 @@ def compute_trend_filter(
     return trend
 
 
+def align_higher_tf(
+    series_htf: pd.Series,
+    index_ltf: pd.DatetimeIndex,
+    htf_bar: str = "4h",
+) -> pd.Series:
+    """Align a higher-timeframe series onto a lower-timeframe index WITHOUT look-ahead.
+
+    The value of a candle labelled ``t`` (its open time) is only known at
+    ``t + bar``. We shift labels to the close time and then forward-fill.
+    """
+    shifted = series_htf.copy()
+    shifted.index = shifted.index + pd.Timedelta(htf_bar)
+    return shifted.reindex(index_ltf, method="ffill")
+
+
 def apply_trend_filter(
     signals_1h: pd.Series,
     trend_4h: pd.Series,
     prices_1h: pd.DataFrame,
+    htf_bar: str = "4h",
 ) -> pd.Series:
     """
     Filter 1h signals by 4h trend direction.
@@ -74,8 +96,8 @@ def apply_trend_filter(
     In downtrend: only keep shorts (remove longs)
     Neutral: keep all signals
     """
-    # Resample 4h trend to 1h (forward-fill)
-    trend_resampled = trend_4h.reindex(prices_1h.index, method="ffill").fillna(0).astype(int)
+    # Align 4h trend to 1h using candle CLOSE time (no look-ahead)
+    trend_resampled = align_higher_tf(trend_4h, prices_1h.index, htf_bar).fillna(0).astype(int)
 
     filtered = signals_1h.copy()
 
@@ -100,10 +122,19 @@ def apply_trend_filter(
     return filtered
 
 
-def get_trend_context(higher_tf_prices: pd.DataFrame) -> dict:
-    """Get trend info for Claude prompt."""
+def get_trend_context(higher_tf_prices: pd.DataFrame, as_of=None) -> dict:
+    """Get trend info for Claude prompt.
+
+    ``as_of``: only use candles closing at or before this timestamp, so the
+    description never leaks the holdout period into the prompt.
+    """
     if higher_tf_prices is None or len(higher_tf_prices) < 200:
         return {}
+
+    if as_of is not None:
+        higher_tf_prices = higher_tf_prices[higher_tf_prices.index + pd.Timedelta("4h") <= as_of]
+        if len(higher_tf_prices) < 200:
+            return {}
 
     close = higher_tf_prices["close"]
     ema50 = close.ewm(span=50).mean()
@@ -131,6 +162,6 @@ def get_trend_context(higher_tf_prices: pd.DataFrame) -> dict:
             f"4h trend is {current_trend} (strength {trend_strength:.2%}). "
             f"Market spent {pct_up:.0f}% in uptrend, {pct_down:.0f}% in downtrend. "
             f"Trend changed {changes} times over the period. "
-            f"{'FOLLOW THE TREND — prefer shorts.' if current_trend == 'downtrend' else 'FOLLOW THE TREND — prefer longs.'}"
+            "(This describes the DEVELOPMENT window only; the trend may reverse.)"
         ),
     }

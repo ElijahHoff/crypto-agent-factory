@@ -1,8 +1,14 @@
 """
-Parameter Sweep v0.9 — Grid search over signal parameters.
+Parameter Sweep v1.0 — Grid search over signal parameters.
 
-Takes agent-generated code with configurable params, tests 50+ combos,
-picks best on in-sample, validates on out-of-sample.
+Takes agent-generated code with configurable params, tests up to 60 combos
+on the DEVELOPMENT data only and picks a *plateau* optimum: the combo whose
+neighbourhood (itself + adjacent grid points) has the best average Sharpe.
+A single sharp peak surrounded by losers is a fingerprint of overfitting
+(Pardo, "The Evaluation and Optimization of Trading Strategies").
+
+Also reports ``n_trials`` so the caller can deflate the final Sharpe.
+The caller is responsible for never passing holdout data in here.
 """
 
 import re
@@ -21,6 +27,7 @@ def run_parameter_sweep(
     code: str,
     prices: pd.DataFrame,
     param_ranges: dict | None = None,
+    selection: str = "plateau",
 ) -> tuple[pd.Series | None, dict, dict]:
     """
     Grid search over parameter combinations in agent code.
@@ -44,7 +51,7 @@ def run_parameter_sweep(
         logger.info("No tunable parameters found — running code as-is")
         sandbox = SignalSandbox()
         signals = sandbox.execute(code, prices)
-        return signals, {}, {"combos_tested": 1}
+        return signals, {}, {"combos_tested": 1, "n_trials": 1}
 
     # Generate grid
     combos = _build_grid(param_ranges)
@@ -81,11 +88,15 @@ def run_parameter_sweep(
 
     if not results:
         logger.warning("All parameter combinations failed")
-        return None, {}, {"combos_tested": len(combos), "successful": 0}
+        return None, {}, {"combos_tested": len(combos), "n_trials": len(combos), "successful": 0}
 
-    # Sort by IS Sharpe
+    # Sort by IS Sharpe, then pick plateau optimum
     results.sort(key=lambda x: x["is_sharpe"], reverse=True)
-    best = results[0]
+    if selection == "plateau" and len(results) >= 4:
+        _score_plateau(results, param_ranges)
+        best = max(results, key=lambda r: r["plateau_sharpe"])
+    else:
+        best = results[0]
 
     # Validate best on OOS
     oos_signals = sandbox.execute(best["code"], oos_prices)
@@ -96,8 +107,13 @@ def run_parameter_sweep(
 
     sweep_log = {
         "combos_tested": len(combos),
+        "n_trials": len(results),
+        "selection": selection,
         "successful": len(results),
         "best_is_sharpe": best["is_sharpe"],
+        "best_plateau_sharpe": best.get("plateau_sharpe", best["is_sharpe"]),
+        "peak_is_sharpe": results[0]["is_sharpe"],
+        "sharpe_std_across_grid": round(float(np.std([r["is_sharpe"] for r in results])), 3),
         "best_oos_sharpe": round(oos_sharpe, 3),
         "best_params": best["params"],
         "top5": [
@@ -114,6 +130,27 @@ def run_parameter_sweep(
     )
 
     return full_signals, best["params"], sweep_log
+
+
+def _score_plateau(results: list[dict], param_ranges: dict) -> None:
+    """Attach ``plateau_sharpe`` = mean IS Sharpe over the combo and its grid neighbours."""
+    index = {}
+    for name, vals in param_ranges.items():
+        index[name] = {v: i for i, v in enumerate(vals)}
+    by_key = {tuple(r["params"][n] for n in param_ranges): r for r in results}
+    for r in results:
+        neigh = [r["is_sharpe"]]
+        for name, vals in param_ranges.items():
+            i = index[name].get(r["params"][name])
+            if i is None:
+                continue
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(vals):
+                    key = tuple(vals[j] if n == name else r["params"][n] for n in param_ranges)
+                    if key in by_key:
+                        neigh.append(by_key[key]["is_sharpe"])
+        r["plateau_sharpe"] = round(float(np.mean(neigh)), 3)
+        r["n_neighbours"] = len(neigh) - 1
 
 
 def _extract_params(code: str) -> dict:
@@ -189,9 +226,10 @@ def _quick_sharpe(prices: pd.DataFrame, signals: pd.Series) -> float:
     if signals is None:
         return -999
     returns = prices["close"].pct_change().fillna(0)
-    strat = returns * signals.shift(1).fillna(0)
-    trades = (signals != signals.shift(1)).astype(float)
-    strat = strat - trades * COST_PER_TRADE
+    position = signals.shift(1).fillna(0)
+    strat = returns * position
+    turnover = position.diff().abs().fillna(0)  # a flip long->short costs 2x
+    strat = strat - turnover * COST_PER_TRADE
     std = strat.std()
     if std == 0:
         return 0
