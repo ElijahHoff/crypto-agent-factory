@@ -36,8 +36,10 @@ def vol_target_positions(
 ) -> pd.Series:
     """Scale a directional signal to a constant annualised volatility target."""
     ret = prices["close"].pct_change()
+    # Realised vol at bar t uses closes <= t, the same information set as the
+    # signal at t; BacktestEngine shifts the whole position by one bar, so no
+    # extra lag is needed here.
     realised = ret.rolling(lookback, min_periods=lookback // 2).std() * np.sqrt(periods_per_year)
-    realised = realised.shift(1)  # known at bar close, applied to next position
     scale = (target_vol_annual / realised).clip(upper=max_leverage).fillna(0)
     return (signals.reindex(prices.index).fillna(0) * scale).astype(float)
 

@@ -165,7 +165,7 @@ def _extract_params(code: str) -> dict:
         params[name] = _generate_range(val)
 
     # Pattern: param_name = value (in function body, lowercase)
-    for match in re.finditer(r'(\w+_(?:period|window|length|threshold|mult|lookback|ema|sma))\s*=\s*(\d+\.?\d*)', code):
+    for match in re.finditer(r'(\w+_(?:period|window|length|threshold|mult|lookback|ema|sma|bars|span|hours|days|factor|pct|ratio|std|multiplier))\s*=\s*(\d+\.?\d*)', code):
         name, val = match.group(1), float(match.group(2))
         params[name] = _generate_range(val)
 
@@ -179,7 +179,19 @@ def _extract_params(code: str) -> dict:
 
 
 def _generate_range(default: float) -> list:
-    """Generate reasonable range around default value."""
+    """Generate reasonable range around default value (ints stay ints)."""
+    vals = _generate_range_raw(default)
+    if float(default).is_integer():
+        return sorted({int(round(v)) for v in vals})
+    return vals
+
+
+def _fmt_param(value) -> str:
+    v = float(value)
+    return str(int(v)) if v.is_integer() else repr(v)
+
+
+def _generate_range_raw(default: float) -> list:
     if default == 0:
         return [0]
     if default >= 100:
@@ -216,8 +228,8 @@ def _inject_params(code: str, params: dict) -> str:
     modified = code
     for name, value in params.items():
         # Replace: NAME = old_value → NAME = new_value
-        pattern = rf'({name}\s*=\s*)(\d+\.?\d*)'
-        replacement = rf'\g<1>{value}'
+        pattern = rf'(\b{name}\s*=\s*)(\d+\.?\d*)'
+        replacement = rf'\g<1>{_fmt_param(value)}'
         modified = re.sub(pattern, replacement, modified, count=1)
     return modified
 

@@ -110,7 +110,7 @@ class LiveBacktestRunner:
             )
             if signals is not None:
                 signal_source = "agent_iterated"
-                logger.info(f"✅ Agent signals (best Sharpe={iteration_log.get('best_sharpe', '?')})")
+                logger.info(f"✅ Agent signals (best Sharpe={iteration_log.get('best_dev_sharpe', '?')})")
         except Exception as e:
             logger.warning(f"Iterative failed: {e}")
 

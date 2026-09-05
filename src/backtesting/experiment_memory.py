@@ -101,8 +101,7 @@ def get_memory_context(limit: int = 10) -> str:
         for m in best[:5]:
             lines.append(
                 f"  {m['strategy_name']} [{m.get('strategy_type', '?')}]: "
-                f"dev Sharpe={_dev(m)}, Trades={m.get('n_trades', 0)}, "
-                f"WFE={m.get('wf_efficiency', 0):.2f}"
+                f"dev Sharpe={_dev(m)}, Trades={m.get('n_trades', 0)}"
             )
             if m.get("code_snippet"):
                 lines.append(f"    Code hint: {m['code_snippet'][:100]}...")
@@ -112,20 +111,22 @@ def get_memory_context(limit: int = 10) -> str:
     if worst:
         lines.append("\nFAILED APPROACHES (DO NOT REPEAT):")
         for m in worst[-5:]:
+            kf = m.get("key_failure", "")
+            reason = "look-ahead in code" if kf.startswith("look-ahead") else "negative dev Sharpe"
             lines.append(
                 f"  ❌ {m['strategy_name']} [{m.get('strategy_type', '?')}]: "
-                f"Sharpe={m['sharpe']}, {m.get('key_failure', 'unknown failure')}"
+                f"dev Sharpe={_dev(m)}, {reason}"
             )
 
     # Summary stats
-    all_sharpes = [m.get("sharpe", 0) for m in memory]
+    all_sharpes = [_dev(m) for m in memory]  # dev-window only
     if all_sharpes:
         lines.append(f"\nSummary: {len(memory)} experiments, "
-                     f"avg Sharpe={sum(all_sharpes)/len(all_sharpes):.2f}, "
+                     f"avg dev Sharpe={sum(all_sharpes)/len(all_sharpes):.2f}, "
                      f"best={max(all_sharpes):.2f}, worst={min(all_sharpes):.2f}")
 
         positive = sum(1 for s in all_sharpes if s > 0)
-        lines.append(f"Positive Sharpe: {positive}/{len(all_sharpes)} ({positive/len(all_sharpes):.0%})")
+        lines.append(f"Positive dev Sharpe: {positive}/{len(all_sharpes)} ({positive/len(all_sharpes):.0%})")
 
     lines.append("=== END MEMORY ===")
     return "\n".join(lines)

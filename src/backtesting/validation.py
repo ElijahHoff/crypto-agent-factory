@@ -253,7 +253,7 @@ class LookaheadResult:
 def lookahead_truncation_test(
     generate: Callable[[pd.DataFrame], pd.Series | None],
     prices: pd.DataFrame,
-    n_cuts: int = 4,
+    n_cuts: int = 12,
     tail: int = 48,
     warmup: int = 1000,
     seed: int = 7,
@@ -275,30 +275,59 @@ def lookahead_truncation_test(
 
     n = len(prices)
     if n < warmup + tail * 2:
-        return LookaheadResult(True, 0, 0.0, "series too short for test")
+        return LookaheadResult(False, 0, 0.0, "UNTESTED: series too short for truncation test")
     rng = np.random.default_rng(seed)
-    cuts = sorted(rng.integers(warmup, n - 1, size=n_cuts).tolist())
+    # Spread cuts over different hours-of-day so that resample("4h"/"1D")
+    # leaks (which only show up when a bin is cut mid-way) cannot hide.
+    residues = rng.permutation(24)[: max(1, n_cuts)]
+    bases = rng.integers(warmup, n - 25, size=len(residues))
+    cuts = sorted({int(b - (b % 24) + r) for b, r in zip(bases, residues) if warmup <= b - (b % 24) + r < n - 1})
 
     worst = 0.0
     mism = []
     for t in cuts:
         part = generate(prices.iloc[:t])
         if part is None:
-            return LookaheadResult(False, n_cuts, 100.0, f"function failed on truncated data (t={t})")
+            return LookaheadResult(False, len(cuts), 100.0, f"function failed on truncated data (t={t})")
         part = part.reindex(prices.index[:t]).fillna(0)
-        a = part.iloc[-tail:].values
-        b = full.iloc[t - tail : t].values
+        # Compare the whole prefix after warm-up, not just the tail: whole-
+        # sample normalisation changes EARLY signals too.
+        a = part.iloc[warmup // 2 : t].values
+        b = full.iloc[warmup // 2 : t].values
         pct = float((a != b).mean() * 100)
-        worst = max(worst, pct)
+        tail_pct = float((part.iloc[-tail:].values != full.iloc[t - tail : t].values).mean() * 100)
+        worst = max(worst, pct, tail_pct)
+        if pct > 0 or tail_pct > 0:
+            mism.append({"cut": int(t), "mismatch_pct": round(pct, 2), "tail_mismatch_pct": round(tail_pct, 1)})
+
+    # Second probe — PERTURBATION: shock every bar after t (price x1.3 / x0.7,
+    # volume x3) and require the prefix to be unchanged. Far more sensitive
+    # than truncation for partial-bin leaks (unshifted resample/ffill), where
+    # removing a few bars barely moves a smoothed value but a 30% shock does.
+    for i, t in enumerate(cuts[: max(4, len(cuts) // 2)]):
+        shocked = prices.copy()
+        factor = 1.3 if i % 2 == 0 else 0.7
+        cols = [c for c in ("open", "high", "low", "close") if c in shocked.columns]
+        shocked.iloc[t:, [shocked.columns.get_loc(c) for c in cols]] *= factor
+        if "volume" in shocked.columns:
+            shocked.iloc[t:, shocked.columns.get_loc("volume")] *= 3.0
+        alt = generate(shocked)
+        if alt is None:
+            return LookaheadResult(False, len(cuts), 100.0, f"function failed on perturbed data (t={t})")
+        alt = alt.reindex(prices.index).fillna(0)
+        a = alt.iloc[warmup // 2 : t].values
+        b = full.iloc[warmup // 2 : t].values
+        pct = float((a != b).mean() * 100)
         if pct > 0:
-            mism.append({"cut": int(t), "mismatch_pct": round(pct, 1)})
+            worst = max(worst, pct)
+            mism.append({"cut": int(t), "perturbation_mismatch_pct": round(pct, 2)})
 
     passed = worst == 0.0
-    detail = "no dependence on future bars detected" if passed else (
-        f"signals change when future bars are removed (max {worst:.0f}% of the last {tail} bars) — "
-        f"future leakage or whole-sample normalisation"
+    detail = f"no dependence on future bars detected ({len(cuts)} truncation + perturbation cuts)" if passed else (
+        f"signals change when future bars are removed (max {worst:.1f}% mismatch across {len(cuts)} cuts) — "
+        f"future leakage, whole-sample normalisation or unshifted resample"
     )
-    return LookaheadResult(passed, n_cuts, round(worst, 1), detail, mism)
+    return LookaheadResult(passed, len(cuts), round(worst, 2), detail, mism)
 
 
 # ── Aggregate ────────────────────────────────────────────────────────────

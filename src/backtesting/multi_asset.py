@@ -193,8 +193,9 @@ def run_multi_asset(
                           {s: 1.0/len(returns_df.columns) for s in returns_df.columns})
     portfolios["equal_weight"] = eq
 
-    # Inverse volatility
-    vols = returns_df.std()
+    # Inverse volatility — weights from the development window only
+    dev_end = int(len(returns_df) * (1 - holdout_pct))
+    vols = returns_df.iloc[:dev_end].std()
     inv_vol = 1.0 / vols.replace(0, 1e-10)
     inv_vol_w = inv_vol / inv_vol.sum()
     iv = _build_portfolio(returns_df, "inverse_vol", inv_vol_w.to_dict())
@@ -203,7 +204,6 @@ def run_multi_asset(
     # Momentum-weighted: weights from the DEVELOPMENT window only (v1.0).
     # Using the last 30 days of the full history chose weights with
     # knowledge of the outcome — look-ahead.
-    dev_end = int(len(returns_df) * (1 - holdout_pct))
     recent = returns_df.iloc[max(0, dev_end - 720):dev_end]
     recent_sharpe = recent.mean() / recent.std().replace(0, 1e-10)
     # Only positive Sharpe assets get weight

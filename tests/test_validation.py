@@ -128,7 +128,18 @@ def test_lookahead_catches_shift_and_global_zscore():
         c = prices["close"]
         return np.sign(c - c.rolling(50, center=True).mean()).fillna(0).astype(int)
 
+    def unshifted_resample(prices):  # the multi-timeframe bug, in miniature
+        h = prices["close"].resample("4h", label="left", closed="left").last().ewm(span=10).mean()
+        return np.sign(prices["close"] - h.reindex(prices.index, method="ffill")).fillna(0).astype(int)
+
+    def shifted_resample(prices):
+        h = prices["close"].resample("4h", label="left", closed="left").last().ewm(span=10).mean()
+        h.index = h.index + pd.Timedelta("4h")
+        return np.sign(prices["close"] - h.reindex(prices.index, method="ffill")).fillna(0).astype(int)
+
     assert lookahead_truncation_test(clean, p, warmup=500).passed
+    assert lookahead_truncation_test(shifted_resample, p, warmup=500).passed
+    assert not lookahead_truncation_test(unshifted_resample, p, warmup=500).passed
     assert not lookahead_truncation_test(peek, p, warmup=500).passed
     assert not lookahead_truncation_test(zscore_global, p, warmup=500).passed
     assert not lookahead_truncation_test(centered, p, warmup=500).passed
@@ -178,6 +189,15 @@ def generate_signals(prices):
     s = pd.Series(raw, index=prices.index).replace(0, np.nan).ffill().fillna(0)
     return s.astype(int)
 '''
+
+
+def test_sweep_keeps_integer_params_integer():
+    from src.backtesting.param_sweep import _extract_params, _inject_params
+    code = "def generate_signals(prices):\n    confirm_bars = 3\n    slow_period = 48\n    entry_threshold = 0.02\n"
+    pr = _extract_params(code)
+    assert all(isinstance(v, int) for v in pr["confirm_bars"])
+    out = _inject_params(code, {"confirm_bars": pr["confirm_bars"][0], "entry_threshold": 0.01})
+    assert "confirm_bars = " in out and ".0\n" not in out.split("confirm_bars = ")[1].split("\n")[0] + "\n"
 
 
 def test_sweep_reports_trials_and_plateau():

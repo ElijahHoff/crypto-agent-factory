@@ -95,7 +95,7 @@ Sharpe ≈ 1/√(лет) ≈ 0.7 для 2 лет и тысячах попыто�
 
 | Файл | Изменение |
 |------|-----------|
-| `backtesting/validation.py` (новый) | PSR/DSR (Bailey–López de Prado), E[max Sharpe] шума, min track record, блочный bootstrap CI, пермутационный тест сигнала, **look-ahead truncation test**, `validate_holdout()` |
+| `backtesting/validation.py` (новый) | PSR/DSR (Bailey–López de Prado), E[max Sharpe] шума, min track record, блочный bootstrap CI, пермутационный тест сигнала, **look-ahead test** (усечение + шок будущих баров ×1.3/×0.7: ловит `shift(-1)`, z-score по выборке, `center=True`, несдвинутый `resample().ffill()` — 9/10 на синтетике при 0 ложных срабатываний), `validate_holdout()` |
 | `backtesting/iterative_signals.py` | Dev/holdout 70/30. LLM, обратная связь и sweep видят только dev. Каждый кандидат проходит truncation-test, утечка → отказ с объяснением в следующий промпт. Счётчик trials. Диагностическая обратная связь (turnover, exposure, cost drag, gross vs net Sharpe) вместо «рынок медвежий, шорти». Анти-leak правила в system prompt. Итоговый код замораживается и один раз прогоняется по полной истории |
 | `backtesting/multi_timeframe.py` | `align_higher_tf()` — выравнивание по времени **закрытия** свечи; `get_trend_context(as_of=)` описывает только dev-окно |
 | `backtesting/param_sweep.py` | Плато-оптимум (среднее по соседям сетки) вместо пика; `n_trials` в логе; корректный учёт переворотов |
@@ -121,6 +121,13 @@ Statistical Validation. Верхний full-sample Sharpe — то, что оп�
 дополнительно считается batch-DSR с N = число экспериментов в памяти. Именно
 он объясняет, почему верхняя строчка любого лидерборда всегда выглядит лучше,
 чем она есть.
+
+Патч прошёл независимое ревью (второй агент, только по diff): найденные им
+пять проблем исправлены — holdout-числа просачивались в промпт через
+`memory` (полный Sharpe и WFE), truncation-тест пропускал «тихие» утечки через
+несдвинутый resample (добавлен perturbation-probe), sweep молча терял целые
+параметры < 10 (`rolling(6.0)` падал), inverse-vol веса в multi-asset брались
+по полной истории, vol-target был с двойным лагом.
 
 ## 4. Честное ограничение, которое патч не снимает
 
